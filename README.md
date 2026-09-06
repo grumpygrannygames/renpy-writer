@@ -73,11 +73,16 @@ Type the first letters of a character's name and it completes it. Where a
 character has portraits, their expressions are offered as you write, with
 previews.
 
+![Writer view](docs/images/writer_editor.png)
+![Code view](docs/images/code_editor.png)
+
 ### The outline
 
 Every scene in your story as a card you can move. Reorder them, move one to a
 different chapter, or park it as a draft until it is ready - drafts stay out of
 the game folder, so a half-written scene never reaches your players.
+
+![Outline view](docs/images/outline.png)
 
 ### Characters, places and notes
 
@@ -86,6 +91,8 @@ the information in one place. Mention a character or place in a note and it beco
 a link.
 
 Renaming someone's display name updates your script.
+
+![Character view](docs/images/character.png)
 
 ### Working with other people
 

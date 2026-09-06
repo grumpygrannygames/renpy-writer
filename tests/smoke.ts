@@ -479,6 +479,58 @@ async function main() {
   const many = Array.from({ length: 5000 }, (_, i) => i * 24)
   check('scales to a full chapter', centreIndex(many, 24 * 3210 + 5) === 3210, String(centreIndex(many, 24 * 3210 + 5)))
 
+  console.log('\n[other languages in the script]')
+  {
+    // A script is not tidily two languages. It picks up a Swedish loan word, a
+    // Japanese sign, a line somebody pasted from somewhere. Most of that is
+    // none of the app's business -- but handing it back exactly as it arrived
+    // very much is, and so is not "correcting" it into English.
+    const lines = [
+      ['Swedish', '    ava "Jag vet inte vad jag ska säga."'],
+      ['Swedish with the letters that matter', '    ben "Skölden är trasig — vi måste vända om."'],
+      ['Japanese', '    cora "何も言わずに、彼女は手紙を二度読んだ。"'],
+      ['Japanese, shorter', '    nico "ドアが閉まる音がした。"'],
+      ['Greek', '    dev "Το γράμμα ήταν άδειο."'],
+      ['Russian', '    quinn "Всё уже решено."'],
+      ['an emoji, which is not a letter at all', '    ava "That went well 🙂"']
+    ]
+
+    for (const [what, line] of lines) {
+      const doc = parseDocument(line + String.fromCharCode(10))
+      check(`${what} parses as dialogue`,
+        doc.nodes[0]?.kind === 'dialogue', doc.nodes[0]?.kind ?? 'none')
+      check(`${what} comes back byte for byte`,
+        serializeDocument(doc) === line + String.fromCharCode(10),
+        JSON.stringify(serializeDocument(doc)))
+    }
+
+    // Speaker cues are ASCII by Ren'Py's own rules, but what they say is not.
+    const japanese = parseDocument('    cora "何も言わずに。"' + String.fromCharCode(10)).nodes[0]
+    check('the speaker is still found in front of non-Latin text',
+      japanese.kind === 'dialogue' && japanese.speaker === 'cora', JSON.stringify(japanese))
+    check('and the words are kept whole',
+      japanese.kind === 'dialogue' && japanese.text === '何も言わずに。',
+      japanese.kind === 'dialogue' ? japanese.text : '')
+
+    // Classification decides what gets sent to a language pass. Getting this
+    // wrong means a proofreader quietly rewriting somebody's Japanese into
+    // English, which is worse than doing nothing at all.
+    check('a Japanese line is never sent to be proofread as English',
+      !needsProofreading('何も言わずに、彼女は手紙を二度読んだ。'))
+    check('nor a Russian one', !needsProofreading('Всё уже решено.'))
+    check('nor Swedish with its own letters',
+      !needsProofreading('Skölden är trasig, vi måste vända om.'))
+    check('while plain English still is',
+      needsProofreading('She read the letter twice and said nothing.'))
+
+    // Non-ASCII is a hint, not proof: a line can be plain ASCII and still not
+    // be English, which is what "unknown" is for.
+    check('an ambiguous line is not confidently anything',
+      classifyLine('Hej.') === 'unknown', classifyLine('Hej.'))
+    check('and is therefore offered to both passes',
+      needsProofreading('Hej.') && needsTranslation('Hej.'))
+  }
+
   console.log('\n[reference saves: a write that waited a second]')
   {
     // Characters, locations and notes save on a debounce, so the write lands

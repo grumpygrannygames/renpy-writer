@@ -127,6 +127,9 @@ interface AppState {
   reorderEpisodes: (ids: string[]) => Promise<void>
   setEpisodeStatus: (episodeId: string, status: EpisodeStatus) => Promise<void>
   setEpisodeRenders: (episodeId: string, renders: RenderConfig | null) => Promise<void>
+  createBeat: (episodeId: string, title: string) => Promise<void>
+  updateBeat: (beatId: string, changes: { title?: string; description?: string }) => Promise<void>
+  removeBeat: (beatId: string) => Promise<void>
   moveBeat: (input: {
     label: string
     fromEpisodeId: string
@@ -402,6 +405,38 @@ export const useStore = create<AppState>((set, get) => ({
       set({ opened: next, parsed: next.parsedEpisodes })
     } catch (e) {
       set({ lastMove: { materialised: [], warnings: [], error: message(e) } })
+    }
+  },
+
+  createBeat: async (episodeId, title) => {
+    const opened = get().opened
+    if (!opened) return
+    try {
+      set({ opened: await api.createBeat(opened.project.renpyRoot, episodeId, title) })
+    } catch (e) {
+      set({ error: message(e) })
+    }
+  },
+
+  updateBeat: async (beatId, changes) => {
+    const opened = get().opened
+    if (!opened) return
+    try {
+      set({ opened: await api.updateBeat(opened.project.renpyRoot, beatId, changes) })
+    } catch (e) {
+      set({ error: message(e) })
+    }
+  },
+
+  removeBeat: async (beatId) => {
+    const opened = get().opened
+    if (!opened) return
+    try {
+      set({ opened: await api.removeBeat(opened.project.renpyRoot, beatId) })
+    } catch (e) {
+      // Refusing to remove a written beat is a message worth reading, not a
+      // silent no-op that leaves somebody clicking the same button again.
+      set({ error: message(e) })
     }
   },
 

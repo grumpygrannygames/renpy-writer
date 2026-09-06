@@ -2306,6 +2306,62 @@ label.check input {
   margin-right: auto;
 }
 
+/* --------------------------------------------------- beats: notes and edits */
+.pc-note {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.45;
+  margin: 4px 0 2px;
+  white-space: pre-wrap;
+}
+.pc-act {
+  font-size: 10px;
+  padding: 1px 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-dim);
+  cursor: pointer;
+  flex: none;
+}
+.pc-act:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+.pc-act.danger:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.plot-add-open {
+  width: 100%;
+  margin-top: 6px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text-faint);
+  border-radius: var(--radius);
+  padding: 6px;
+  cursor: pointer;
+}
+.plot-add-open:hover {
+  color: var(--text-dim);
+  border-color: var(--text-dim);
+}
+.plot-add {
+  margin-top: 6px;
+}
+.plot-add-row {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+.note-modal textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 13px;
+}
+
 .rs-save {
   margin-top: 10px;
 }

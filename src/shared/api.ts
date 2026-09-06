@@ -316,6 +316,28 @@ export interface RenpyWriterApi {
     episodeId: string,
     renders: RenderConfig | null
   ): Promise<OpenedProject>
+  /**
+   * Add a beat to an episode's outline, with no label in the script yet.
+   *
+   * Planning runs ahead of writing: a beat can exist as a card long before
+   * anything is written for it, and nothing is added to the .rpy until
+   * somebody writes it.
+   */
+  createBeat(renpyRoot: string, episodeId: string, title: string): Promise<OpenedProject>
+  /** Change a beat's title or the note kept with it. */
+  updateBeat(
+    renpyRoot: string,
+    beatId: string,
+    changes: { title?: string; description?: string }
+  ): Promise<OpenedProject>
+  /**
+   * Forget a beat that was never written.
+   *
+   * A beat with a label is refused: the label is in the script, and removing
+   * a card is not a reason to delete somebody's scene.
+   */
+  removeBeat(renpyRoot: string, beatId: string): Promise<OpenedProject>
+
   /** What this installation supports. Asked once, before anything is drawn. */
   capabilities(): Promise<HostCapabilities>
 
@@ -365,6 +387,9 @@ export const IPC = {
   reorderEpisodes: 'episodes:reorder',
   setEpisodeStatus: 'episodes:setStatus',
   moveBeat: 'beats:move',
+  createBeat: 'beats:create',
+  updateBeat: 'beats:update',
+  removeBeat: 'beats:remove',
   runScriptPass: 'script:pass',
   capabilities: 'host:capabilities',
   gitStatus: 'git:status',

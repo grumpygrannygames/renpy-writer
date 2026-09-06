@@ -26,6 +26,17 @@ interface DragState {
  * placed in another. Fall-through is written out as an explicit jump first, so
  * the story keeps running the same way whatever the new file order is.
  */
+/**
+ * A beat's name as it should be read.
+ *
+ * Titles come from Ren'Py labels, which are written for the engine:
+ * `D14_MORNING`. The underscores are punctuation the engine needs and a
+ * person does not, so they are spaces here and the label itself is untouched.
+ */
+export function beatName(title: string): string {
+  return title.replace(/_/g, ' ').toUpperCase()
+}
+
 export default function PlotBoard() {
   const opened = useStore((s) => s.opened)
   const parsed = useStore((s) => s.parsed)
@@ -35,7 +46,13 @@ export default function PlotBoard() {
   const openEpisode = useStore((s) => s.openEpisode)
   const lastMove = useStore((s) => s.lastMove)
   const clearLastMove = useStore((s) => s.clearLastMove)
+  const createBeat = useStore((s) => s.createBeat)
+  const updateBeat = useStore((s) => s.updateBeat)
+  const removeBeat = useStore((s) => s.removeBeat)
 
+  const [adding, setAdding] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const [noting, setNoting] = useState<{ id: string; text: string } | null>(null)
   const [drag, setDrag] = useState<DragState | null>(null)
   const [dropAt, setDropAt] = useState<{ episodeId: string; index: number } | null>(null)
   const [dragEpisode, setDragEpisode] = useState<string | null>(null)
@@ -195,8 +212,16 @@ export default function PlotBoard() {
                           void drop(ep.id, i)
                         }}
                         onClick={() => void openEpisode(ep.fileName)}
+                        // The card reads as prose; the label is what the engine
+                        // actually calls this, and is worth being able to see
+                        // without opening the script.
+                        title={beat.label ?? 'Not written yet'}
+                        data-label={beat.label ?? ''}
                       >
-                        <div className="pc-title">{beat.title}</div>
+                        <div className="pc-title">{beatName(beat.title)}</div>
+                        {beat.description && (
+                          <div className="pc-note">{beat.description}</div>
+                        )}
                         <div className="pc-meta">
                           {kind && (
                             <span className="pc-kind" style={{ color: END_COLOR[kind] }}>
@@ -204,6 +229,29 @@ export default function PlotBoard() {
                             </span>
                           )}
                           {!beat.label && <span className="pc-kind">not written</span>}
+                          <span className="spacer" />
+                          <button
+                            className="pc-act"
+                            title={beat.description ? 'Edit the note' : 'Add a note'}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setNoting({ id: beat.id, text: beat.description ?? '' })
+                            }}
+                          >
+                            {beat.description ? 'Note' : '+ Note'}
+                          </button>
+                          {!beat.label && (
+                            <button
+                              className="pc-act danger"
+                              title="Remove this beat from the outline"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                void removeBeat(beat.id)
+                              }}
+                            >
+                              &times;
+                            </button>
+                          )}
                         </div>
                       </article>
                     </div>
@@ -214,6 +262,46 @@ export default function PlotBoard() {
                   <div className="plot-drop" />
                 )}
                 {beats.length === 0 && <div className="plot-empty">No beats yet.</div>}
+
+                {adding === ep.id ? (
+                  <form
+                    className="plot-add"
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      const name = draft.trim()
+                      if (!name) return
+                      void createBeat(ep.id, name).then(() => {
+                        setDraft('')
+                        setAdding(null)
+                      })
+                    }}
+                  >
+                    <input
+                      autoFocus
+                      value={draft}
+                      placeholder="What happens here?"
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          setAdding(null)
+                          setDraft('')
+                        }
+                      }}
+                    />
+                    <div className="plot-add-row">
+                      <button type="button" onClick={() => { setAdding(null); setDraft('') }}>
+                        Cancel
+                      </button>
+                      <button type="submit" className="primary" disabled={!draft.trim()}>
+                        Add
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <button className="plot-add-open" onClick={() => setAdding(ep.id)}>
+                    + Beat
+                  </button>
+                )}
               </div>
             </section>
           )
@@ -225,6 +313,37 @@ export default function PlotBoard() {
           </div>
         )}
       </div>
+
+      {noting && (
+        <div className="modal-backdrop" onClick={() => setNoting(null)}>
+          <div className="modal note-modal" onClick={(e) => e.stopPropagation()}>
+            <h2>A note on this beat</h2>
+            <p className="hint">
+              Kept with the outline, not written into the script. Somewhere to put what the
+              scene is for before it exists.
+            </p>
+            <textarea
+              autoFocus
+              rows={6}
+              value={noting.text}
+              onChange={(e) => setNoting({ ...noting, text: e.target.value })}
+            />
+            <div className="actions-row">
+              <button onClick={() => setNoting(null)}>Cancel</button>
+              <button
+                className="primary"
+                onClick={() => {
+                  const { id, text } = noting
+                  setNoting(null)
+                  void updateBeat(id, { description: text.trim() })
+                }}
+              >
+                Save note
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {busy && <div className="plot-busy">Rewriting script…</div>}
     </div>

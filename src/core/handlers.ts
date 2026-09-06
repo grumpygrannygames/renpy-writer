@@ -503,6 +503,73 @@ export function registerHandlers(register: Register, host: HostServices): void {
     }
   )
 
+  register(IPC.createBeat, async (root: string, episodeId: string, title: string) => {
+    const provider = ws(root)
+    const sidecar = await readSidecarProject(provider)
+    if (!sidecar) throw new Error(`No project found at ${root}`)
+    if (!sidecar.episodes.some((e) => e.id === episodeId)) {
+      throw new Error('That episode is no longer in the project.')
+    }
+    const named = title.trim()
+    if (!named) throw new Error('A beat needs a name.')
+
+    const outline = await readOutline(provider)
+    // Added at the end of its own episode, which is where a new idea goes
+    // when nobody has said otherwise.
+    const last = outline.beats
+      .filter((b) => b.episodeId === episodeId)
+      .reduce((n, b) => Math.max(n, b.order + 1), 0)
+    await writeOutline(provider, {
+      version: 1,
+      beats: [
+        ...outline.beats,
+        { id: randomUUID(), episodeId, label: null, title: named, order: last }
+      ]
+    })
+    return loadProject(host, root)
+  })
+
+  register(
+    IPC.updateBeat,
+    async (root: string, beatId: string, changes: { title?: string; description?: string }) => {
+      const provider = ws(root)
+      const outline = await readOutline(provider)
+      const beat = outline.beats.find((b) => b.id === beatId)
+      if (!beat) throw new Error('That beat is no longer in the outline.')
+
+      const title = changes.title === undefined ? beat.title : changes.title.trim()
+      if (!title) throw new Error('A beat needs a name.')
+      const description =
+        changes.description === undefined ? beat.description : changes.description
+
+      await writeOutline(provider, {
+        version: 1,
+        beats: outline.beats.map((b) =>
+          b.id === beatId ? { ...b, title, description } : b
+        )
+      })
+      return loadProject(host, root)
+    }
+  )
+
+  register(IPC.removeBeat, async (root: string, beatId: string) => {
+    const provider = ws(root)
+    const outline = await readOutline(provider)
+    const beat = outline.beats.find((b) => b.id === beatId)
+    if (!beat) throw new Error('That beat is no longer in the outline.')
+    if (beat.label) {
+      throw new Error(
+        `“${beat.title}” is written: ${beat.label} is a label in the script. Remove it from ` +
+          'the script and it will leave the outline by itself.'
+      )
+    }
+    await writeOutline(provider, {
+      version: 1,
+      beats: outline.beats.filter((b) => b.id !== beatId)
+    })
+    return loadProject(host, root)
+  })
+
   register(IPC.capabilities, async () => host.capabilities)
 
   register(IPC.gitStatus, (root: string) => readStatus(root))

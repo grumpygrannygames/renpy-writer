@@ -182,7 +182,7 @@ app.whenReady().then(async () => {
   check('React mounted', shell.mounted)
   check('project gate rendered', shell.gate)
   check('heading reads the app name', shell.heading === 'Ren’Py Writer', String(shell.heading))
-  check('api exposes all 32 methods', shell.apiMethods === 32, String(shell.apiMethods))
+  check('api exposes all 35 methods', shell.apiMethods === 35, String(shell.apiMethods))
 
   console.log('\n[a broken bridge says so]')
   {
@@ -3254,6 +3254,121 @@ app.whenReady().then(async () => {
   check('episodes start in the game', board.statuses.every(s => s === 'In game'),
     JSON.stringify(board.statuses))
 
+  console.log('\n[beats: adding, noting, removing]')
+  {
+    const outlineFile = path.join(root, '.renpywriter', 'outline.json')
+
+    const added = await js(`(async () => {
+      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Plot')?.click();
+      await wait(700);
+
+      const before = document.querySelectorAll('.plot-card').length;
+      const titlesBefore = Array.from(document.querySelectorAll('.pc-title'))
+        .map(e => e.textContent);
+
+      const open = document.querySelector('.plot-add-open');
+      if (!open) return { stage: 'no add control' };
+      open.click();
+      await wait(250);
+      const input = document.querySelector('.plot-add input');
+      if (!input) return { stage: 'no field' };
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        .call(input, 'they_find_the_letter');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await wait(150);
+      document.querySelector('.plot-add button.primary').click();
+      await wait(900);
+
+      const titles = Array.from(document.querySelectorAll('.pc-title')).map(e => e.textContent);
+      return {
+        stage: 'ok', before, after: document.querySelectorAll('.plot-card').length,
+        titles, titlesBefore
+      };
+    })()`)
+
+    check('a beat can be added from the plot board', added.stage === 'ok',
+      JSON.stringify(added).slice(0, 160))
+    check('and appears as a card', added.after === added.before + 1,
+      `${added.before} -> ${added.after}`)
+    check('shown without its underscores',
+      (added.titles ?? []).includes('THEY FIND THE LETTER'),
+      JSON.stringify((added.titles ?? []).slice(-3)))
+    check('and the ones from the script read the same way',
+      (added.titlesBefore ?? []).every(t => !t.includes('_')),
+      JSON.stringify((added.titlesBefore ?? []).slice(0, 3)))
+
+    const outlineAfterAdd = JSON.parse(await fs.readFile(outlineFile, 'utf8'))
+    const planned = outlineAfterAdd.beats.find((b) => b.title === 'they_find_the_letter')
+    check('it reached the outline file', !!planned, JSON.stringify(outlineAfterAdd.beats.length))
+    check('with no label, because nothing has been written for it',
+      planned?.label === null, JSON.stringify(planned))
+
+    // A note on the beat, which is the point of planning one before writing.
+    const noted = await js(`(async () => {
+      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const card = Array.from(document.querySelectorAll('.plot-card'))
+        .find(c => c.querySelector('.pc-title')?.textContent === 'THEY FIND THE LETTER');
+      if (!card) return { stage: 'no card' };
+      card.querySelector('.pc-act').click();
+      await wait(300);
+      const box = document.querySelector('.note-modal textarea');
+      if (!box) return { stage: 'no note box' };
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+        .call(box, 'She reads it twice and says nothing.');
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      await wait(150);
+      Array.from(document.querySelectorAll('.note-modal button'))
+        .find(b => b.textContent === 'Save note').click();
+      await wait(900);
+      const again = Array.from(document.querySelectorAll('.plot-card'))
+        .find(c => c.querySelector('.pc-title')?.textContent === 'THEY FIND THE LETTER');
+      return { stage: 'ok', shown: again?.querySelector('.pc-note')?.textContent ?? null };
+    })()`)
+
+    check('a note can be put on a beat', noted.stage === 'ok', JSON.stringify(noted))
+    check('and shows on the card',
+      (noted.shown ?? '').includes('reads it twice'), String(noted.shown))
+    const outlineAfterNote = JSON.parse(await fs.readFile(outlineFile, 'utf8'))
+    check('and is kept with the outline, not the script',
+      (outlineAfterNote.beats.find((b) => b.title === 'they_find_the_letter')?.description ?? '')
+        .includes('reads it twice'),
+      JSON.stringify(outlineAfterNote.beats.find((b) => b.title === 'they_find_the_letter')))
+
+    const scriptStillThere = await fs.readFile(
+      path.join(root, 'game', 'scripts', 'chapter_2.rpy'), 'utf8')
+    check('and nothing was written into the script for it',
+      !scriptStillThere.includes('they_find_the_letter'), 'label leaked into the script')
+
+    // Removing: offered for a beat nobody has written, refused for one in the
+    // script, because a card is not a reason to delete a scene.
+    const removal = await js(`(async () => {
+      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const cards = Array.from(document.querySelectorAll('.plot-card'));
+      const written = cards.find(c => !c.textContent.includes('not written'));
+      const planned = cards.find(c =>
+        c.querySelector('.pc-title')?.textContent === 'THEY FIND THE LETTER');
+      const writtenHasRemove = !!written?.querySelector('.pc-act.danger');
+      planned.querySelector('.pc-act.danger').click();
+      await wait(900);
+      return {
+        stage: 'ok', writtenHasRemove,
+        left: Array.from(document.querySelectorAll('.pc-title')).map(e => e.textContent)
+      };
+    })()`)
+
+    check('a written beat offers no remove button', removal.writtenHasRemove === false,
+      String(removal.writtenHasRemove))
+    check('an unwritten one can be removed',
+      !(removal.left ?? []).includes('THEY FIND THE LETTER'),
+      JSON.stringify((removal.left ?? []).slice(-3)))
+    const outlineAfterRemove = JSON.parse(await fs.readFile(outlineFile, 'utf8'))
+    check('and it left the outline file',
+      !outlineAfterRemove.beats.some((b) => b.title === 'they_find_the_letter'),
+      String(outlineAfterRemove.beats.length))
+  }
+
   console.log('\n[moving a beat to another episode]')
   const moved = await js(`(async () => {
     const before9 = await window.api.readEpisode(${JSON.stringify(root)}, 'chapter_2.rpy');
@@ -3263,7 +3378,7 @@ app.whenReady().then(async () => {
     const source = cols.find(c => c.querySelector('.plot-file')?.textContent === 'chapter_2.rpy');
     const target = cols.find(c => c.querySelector('.plot-file')?.textContent === 'chapter_1.rpy');
     const card = source.querySelectorAll('.plot-card')[2];
-    const label = card.querySelector('.pc-title').textContent;
+    const label = card.getAttribute('data-label');
 
     const dt = new DataTransfer();
     card.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
