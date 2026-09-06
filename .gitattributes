@@ -1,0 +1,19 @@
+# Line endings, which matter more here than in most projects.
+
+# Source is normalised on the way in and checked out however the platform
+# likes. That is the ordinary, convenient behaviour.
+* text=auto
+
+# Shell scripts must keep LF wherever they are checked out. A setup script
+# that arrives with Windows line endings fails on macOS and Linux with
+# "bad interpreter", which tells the person running it nothing useful.
+*.sh text eol=lf
+
+# Windows batch files want CRLF for the same reason, in reverse.
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# The sample project is compared byte for byte by the tests -- that is the
+# whole point of it. Git must hand these back exactly as they were committed,
+# on every platform, rather than helpfully rewriting their line endings.
+tests/fixture/** -text

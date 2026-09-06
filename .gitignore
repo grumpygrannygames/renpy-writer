@@ -1,0 +1,24 @@
+node_modules/
+out/
+dist/
+.DS_Store
+*.log
+tests/.ipc-bundle.mjs
+
+# Server state: accounts, sessions and its project list. Never commit these.
+.server-data/
+tests/.server-bundle.mjs
+tests/.users-bundle.mjs
+
+# Names somebody's server; not for sharing
+.deploy.json
+deploy-*.tgz
+
+# Build artefacts
+tsconfig.*.tsbuildinfo
+testproj/
+
+# Node kept inside the project by setup
+.node/
+Ren'Py Writer.cmd
+start-renpy-writer.sh

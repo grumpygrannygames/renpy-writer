@@ -1,0 +1,2339 @@
+import { promises as fs } from 'node:fs'
+import * as path from 'node:path'
+import { LocalWorkspaceProvider } from '../src/core/workspace/LocalWorkspaceProvider'
+import { checkRenpyRoot, listScriptFiles, toFileSlug } from '../src/core/renpy/detect'
+import { parseEpisode } from '../src/core/renpy/labels'
+import {
+  newSidecarProject,
+  readOutline,
+  readSidecarProject,
+  reconcileBeats,
+  writeOutline,
+  writeSidecarProject
+} from '../src/core/projects/sidecar'
+import { DEFAULT_SETTINGS } from '../src/shared/types'
+import { scanCharacters } from '../src/core/renpy/characters'
+import { contrastRatio, readableOn } from '../src/renderer/src/color'
+import { buildLabeller } from '../src/renderer/src/characterLabel'
+import { readReference, writeReference } from '../src/core/projects/reference'
+import { buildLinkIndex, parseLinks, linkedNames } from '../src/renderer/src/wikiLink'
+import { centreIndex } from '../src/renderer/src/anchor'
+import { renameCharacter } from '../src/core/renpy/rename'
+import { resolveImageName, readPortrait } from '../src/core/renpy/images'
+import { imageNameAt } from '../src/renderer/src/imageHover'
+import { moveBeat } from '../src/core/renpy/restructure'
+import { classifyLine, needsProofreading, needsTranslation } from '../src/core/passes/language'
+import { buildPrompt, buildProofreadPrompt, parseResponse } from '../src/core/passes/prompt'
+import { runPass } from '../src/core/passes'
+import { cliRunner } from '../src/core/passes/runner'
+import { clampQuality, convertRender, findFfmpeg, planRenderSync, probeFfmpeg, targetDirFor } from '../src/core/renders'
+import { commit, pull, push, readStatus, resolvePull } from '../src/core/git'
+import { createUserStore } from '../src/server/users'
+import { createSessionStore } from '../src/server/sessions'
+import {
+  clearedCookie,
+  createAttemptLimiter,
+  isWrite,
+  mayPerform,
+  arrivedOverHttps,
+  originAllowed,
+  readCookie,
+  refusalFor,
+  sessionCookie
+} from '../src/server/auth'
+import { IPC } from '../src/shared/api'
+import { canvasQuality } from '../src/main/encoder'
+import {
+  escapeText,
+  parseDocument,
+  serializeDocument,
+  toggleMarkup,
+  touch,
+  unescapeText,
+  adjustSize
+} from '../src/shared/renpy/document'
+
+const SCRATCH = path.resolve(process.env.SMOKE_DIR ?? '.', 'testproj')
+/**
+ * Two sample projects that travel with the tests.
+ *
+ * They used to be somebody's actual games, which meant the suite only ran on
+ * one machine and told a stranger cloning this nothing at all. These are small
+ * and made up, but shaped like the real thing: one project with chapters under
+ * game/scripts, one with a single script.rpy straight in game/.
+ */
+// Relative to where the suite is run from, not to this file: it is bundled
+// before it runs, so import.meta.url points into node_modules/.cache.
+const FIXTURE = path.resolve(process.env.SMOKE_DIR ?? '.', 'tests', 'fixture')
+const EPISODIC = path.join(FIXTURE, 'episodic')
+const FLAT = path.join(FIXTURE, 'flat')
+
+let pass = 0
+let fail = 0
+function check(name: string, cond: boolean, detail = '') {
+  if (cond) {
+    pass++
+    console.log(`  ok   ${name}`)
+  } else {
+    fail++
+    console.log(`  FAIL ${name}${detail ? ' -- ' + detail : ''}`)
+  }
+}
+
+async function main() {
+  await fs.rm(SCRATCH, { recursive: true, force: true })
+  await fs.mkdir(path.join(SCRATCH, 'game'), { recursive: true })
+
+  // A minimal Ren'Py project shaped like the flat sample: script.rpy directly in game/.
+  const flatSource = await fs.readFile(path.join(FLAT, 'game', 'script.rpy'), 'utf8')
+  await fs.writeFile(path.join(SCRATCH, 'game', 'script.rpy'), flatSource, 'utf8')
+  await fs.mkdir(path.join(SCRATCH, 'game', 'images'), { recursive: true })
+
+  console.log('\n[detect]')
+  const bad = await checkRenpyRoot(path.join(SCRATCH, 'game'))
+  check('rejects a folder with no game/', !bad.valid, bad.reason)
+
+  const ok = await checkRenpyRoot(SCRATCH)
+  check('accepts the project root', ok.valid, ok.reason)
+  check('offers game/ as a script dir', ok.scriptDirCandidates.includes(''), JSON.stringify(ok.scriptDirCandidates))
+  check('ignores images/ as a script dir', !ok.scriptDirCandidates.includes('images'))
+
+  const episodic = await checkRenpyRoot(EPISODIC)
+  check('a project with chapters resolves to game/scripts',
+    episodic.valid && episodic.scriptDirCandidates.includes('scripts'),
+    JSON.stringify(episodic.scriptDirCandidates))
+
+  const chapters = await listScriptFiles(EPISODIC, 'scripts')
+  check('lists the chapters', chapters.includes('chapter_1.rpy'), chapters.join(','))
+  check('excludes engine boilerplate',
+    !chapters.includes('screens.rpy') && !chapters.includes('options.rpy'), chapters.join(','))
+  check('sorts numerically, so 10 comes after 2',
+    chapters.indexOf('chapter_2.rpy') < chapters.indexOf('chapter_10.rpy'), chapters.join(','))
+
+  console.log('\n[slug]')
+  check('Episode 1 -> episode_1', toFileSlug('Episode 1') === 'episode_1')
+  check("Ren'Py Ep 2 -> renpy_ep_2", toFileSlug("Ren'Py Ep 2") === 'renpy_ep_2', toFileSlug("Ren'Py Ep 2"))
+  check('trims separators', toFileSlug('  Act -- III  ') === 'act_iii', toFileSlug('  Act -- III  '))
+
+  console.log('\n[sidecar]')
+  const ws = new LocalWorkspaceProvider(SCRATCH)
+  check('no project before creation', (await readSidecarProject(ws)) === null)
+
+  const sc = newSidecarProject('Flat Sample', { ...DEFAULT_SETTINGS, scriptDir: '', linear: true })
+  await writeSidecarProject(ws, sc)
+  const readBack = await readSidecarProject(ws)
+  check('project round-trips', readBack?.name === 'Flat Sample' && readBack.settings.scriptDir === '')
+
+  console.log('\n[containment]')
+  let escaped = false
+  try {
+    await ws.readText('../../../Windows/System32/drivers/etc/hosts')
+  } catch {
+    escaped = true
+  }
+  check('refuses paths escaping the project root', escaped)
+
+  console.log('\n[beats]')
+  const parsed = parseEpisode('script.rpy', flatSource)
+  check('finds the start label', parsed.labels.length === 1 && parsed.labels[0].label === 'start')
+  check('detects the BOM', parsed.hadBom)
+  check('start ends hand-authored (return)', parsed.labels[0].endKind === 'hand-authored',
+    parsed.labels[0].endKind)
+
+  let beats = reconcileBeats([], 'ep1', parsed.labels.map((l) => l.label))
+  check('creates a beat per label', beats.length === 1 && beats[0].label === 'start')
+
+  // Attach metadata, then simulate the label being renamed outside the app.
+  beats[0] = { ...beats[0], description: 'opening scene' }
+  const afterRename = reconcileBeats(beats, 'ep1', ['start_v2'])
+  const orphan = afterRename.find((b) => b.description === 'opening scene')
+  check('keeps notes when a label vanishes', !!orphan && orphan.label === null)
+  check('adds a beat for the new label', afterRename.some((b) => b.label === 'start_v2'))
+  check('does not delete anything', afterRename.length === 2, String(afterRename.length))
+
+  await writeOutline(ws, { version: 1, beats: afterRename })
+  check('outline round-trips', (await readOutline(ws)).beats.length === 2)
+
+  console.log('\n[byte fidelity: read -> write -> compare]')
+  const roundTripped = ['script', 'chapter_1', 'chapter_2', 'chapter_10']
+  for (const c of roundTripped) {
+    const src = path.join(EPISODIC, "game", "scripts", c + ".rpy")
+    const original = await fs.readFile(src)
+    const asText = original.toString('utf8')
+    await ws.writeText(`roundtrip/${c}.rpy`, asText)
+    const written = await fs.readFile(path.join(SCRATCH, 'roundtrip', `${c}.rpy`))
+    check(`${c}.rpy survives a read/write cycle byte-for-byte`, original.equals(written),
+      `${original.length} vs ${written.length} bytes`)
+  }
+
+  const flatOriginal = await fs.readFile(path.join(FLAT, 'game', 'script.rpy'))
+  await ws.writeText('roundtrip/flat.rpy', flatOriginal.toString('utf8'))
+  const flatWritten = await fs.readFile(path.join(SCRATCH, 'roundtrip', 'flat.rpy'))
+  check('BOM file survives a read/write cycle byte-for-byte', flatOriginal.equals(flatWritten),
+    `${flatOriginal.length} vs ${flatWritten.length} bytes`)
+
+
+  console.log('\n[document: classification]')
+  const sample = [
+    'label D16_MEETING:',
+    '    # Omar is on bed with a beer in his hand',
+    '    omar "Kde se flaka?"',
+    '    omar serious "Could it still be there?"',
+    '    "A narrator line."',
+    '    play music morning fadein 1 fadeout 3',
+    '    $ current_chapter = "Ch.9 - Morning"',
+    '    scene ch9_diner_1 with Fade(1, 1, 2)',
+    '    menu:',
+    '        "But...":',
+    '            jump D16_BACCHUS_2',
+    'define audio.heartbeats = "audio/fx/heartbeats.mp3"',
+    'image side nadia = "portraits/nadia_normal.png"',
+    ''
+  ].join('\n')
+  const doc = parseDocument(sample)
+  const kinds = doc.nodes.map((n) => n.kind)
+  const at = (i: number) => kinds[i]
+
+  check('label line', at(0) === 'label', at(0))
+  check('comment becomes an action', at(1) === 'action', at(1))
+  check('plain dialogue', at(2) === 'dialogue', at(2))
+  check('dialogue with an expression', at(3) === 'dialogue', at(3))
+  check('narrator line', at(4) === 'dialogue', at(4))
+  check('play statement stays raw', at(5) === 'raw', at(5))
+  check('$ python line stays raw', at(6) === 'raw', at(6))
+  check('scene statement stays raw', at(7) === 'raw', at(7))
+  check('menu stays raw', at(8) === 'raw', at(8))
+  check('menu choice recognised', at(9) === 'choice', at(9))
+  check('jump stays raw', at(10) === 'raw', at(10))
+  check('define stays raw', at(11) === 'raw', at(11))
+  check('image side stays raw', at(12) === 'raw', at(12))
+
+  const withExpr = doc.nodes[3] as any
+  check('expression parsed as attribute',
+    withExpr.speaker === 'omar' && withExpr.attributes.join(',') === 'serious',
+    withExpr.speaker + ' / ' + withExpr.attributes)
+  check('narrator has no speaker', (doc.nodes[4] as any).speaker === null)
+  check('action text strips the hash',
+    (doc.nodes[1] as any).text === 'Omar is on bed with a beer in his hand',
+    (doc.nodes[1] as any).text)
+
+  console.log('\n[document: escaping and markup]')
+  const tricky = 'She said \\"no\\" and left'
+  check('escape/unescape round-trips', escapeText(unescapeText(tricky)) === tricky,
+    escapeText(unescapeText(tricky)))
+  const bolded = toggleMarkup('hello world', 0, 5, 'bold')
+  check('bold wraps a selection', bolded.text === '{b}hello{/b} world', bolded.text)
+  const unbolded = toggleMarkup(bolded.text, bolded.start, bolded.end, 'bold')
+  check('bold toggles back off', unbolded.text === 'hello world', unbolded.text)
+  const ital = toggleMarkup('a b c', 2, 3, 'italic')
+  check('italic wraps a selection', ital.text === 'a {i}b{/i} c', ital.text)
+
+  console.log('\n[document: editing]')
+  const editedDoc = {
+    ...doc,
+    nodes: doc.nodes.map((n) => (n.id === 'n2' ? touch(n as any, { text: 'Kde je?' }) : n))
+  }
+  const out = serializeDocument(editedDoc)
+  check('edited line is regenerated', out.includes('    omar "Kde je?"'))
+  check('untouched lines emit verbatim', out.includes('    play music morning fadein 1 fadeout 3'))
+  check('edited document re-parses to the same shape',
+    parseDocument(out).nodes.map((n) => n.kind).join(',') === kinds.join(','))
+
+  console.log('\n[document: exact round-trip on every real script]')
+  const scriptDir = path.join(EPISODIC, 'game', 'scripts')
+  for (const f of (await fs.readdir(scriptDir)).filter((x) => x.endsWith('.rpy'))) {
+    const src = await fs.readFile(path.join(scriptDir, f), 'utf8')
+    const back = serializeDocument(parseDocument(src))
+    check(f + ' round-trips exactly', back === src,
+      back.length === src.length ? 'same length, content differs' : src.length + ' -> ' + back.length + ' chars')
+  }
+  const flatText = await fs.readFile(path.join(FLAT, 'game', 'script.rpy'), 'utf8')
+  check('a script with a BOM round-trips exactly',
+    serializeDocument(parseDocument(flatText)) === flatText)
+
+  console.log('\n[document: line endings and EOF]')
+  const eolCases: [string, string][] = [
+    ['LF', 'a\nb\nc\n'],
+    ['CRLF', 'a\r\nb\r\nc\r\n'],
+    ['no trailing newline', 'a\nb\nc'],
+    ['mixed endings', 'a\r\nb\nc\r\n'],
+    ['empty file', ''],
+    ['only a newline', '\n'],
+    ['trailing blank lines', 'a\n\n\n']
+  ]
+  for (const [nm, txt] of eolCases) {
+    check(nm + ' round-trips', serializeDocument(parseDocument(txt)) === txt,
+      JSON.stringify(serializeDocument(parseDocument(txt))))
+  }
+
+
+  console.log('\n[characters: scanned from the project itself]')
+  const cast = await scanCharacters(EPISODIC)
+  const byVar = new Map(cast.map((c) => [c.varName, c]))
+  check('finds the cast', cast.length >= 7, String(cast.length))
+  const ava = byVar.get('ava')
+  check('a character resolves to its display name', !!ava && ava.name === 'Ava',
+    ava ? ava.name : 'missing')
+  check('and keeps its colour', ava?.color === '#ffffb2', ava?.color ?? 'none')
+  check('expressions come from the portrait files',
+    (ava?.expressions.length ?? 0) === 5, String(ava?.expressions.length))
+  check('and are the ones on disk',
+    !!ava && ['happy', 'sad', 'angry', 'smirk'].every((e) => ava.expressions.includes(e)),
+    JSON.stringify(ava?.expressions))
+  const ben = byVar.get('ben')
+  check('a second character has its own', (ben?.expressions.length ?? 0) === 2,
+    String(ben?.expressions.length))
+  const avaAlter = byVar.get('ava_alter')
+  check('separate image tag keeps its own expressions',
+    !!avaAlter && avaAlter.expressions.includes('explaining') && !ava!.expressions.includes('explaining'),
+    JSON.stringify(avaAlter?.expressions))
+  const thoughts = byVar.get('ava_thoughts')
+  check('image= attribute maps a variant onto the base tag',
+    !!thoughts && thoughts.imageTag === 'ava' && thoughts.expressions.includes('happy'),
+    JSON.stringify(thoughts))
+  const noPortrait = byVar.get('quinn')
+  check('character without portraits has no expressions',
+    !!noPortrait && noPortrait.expressions.length === 0, String(noPortrait?.expressions.length))
+
+  const flatCast = await scanCharacters(FLAT)
+  check('a one-file project scans too', flatCast.some((c) => c.varName === 'mara'),
+    JSON.stringify(flatCast.map((c) => c.varName)))
+
+  console.log('\n[colour: character names on the dark writer ground]')
+  const BG = '#16161a'
+  const px = (h: string) => ({
+    r: parseInt(h.replace('#','').slice(0,2),16),
+    g: parseInt(h.replace('#','').slice(2,4),16),
+    b: parseInt(h.replace('#','').slice(4,6),16)
+  })
+  const coloured = (await scanCharacters(EPISODIC)).filter((c) => c.color)
+  const ratios = coloured.map((c) => contrastRatio(px(readableOn(c.color, BG, '#e6e6ea')), px(BG)))
+  check('every character colour is legible after adjustment',
+    Math.min(...ratios) >= 4.5, 'worst ' + Math.min(...ratios).toFixed(2) + ':1')
+  check('an already-legible colour is left alone',
+    readableOn('#ffffb2', BG, '#e6e6ea').toLowerCase() === '#ffffb2')
+  check('a near-invisible colour is lifted',
+    readableOn('#36393F', BG, '#e6e6ea').toLowerCase() !== '#36393f')
+  const lifted = px(readableOn('#36393F', BG, '#e6e6ea'))
+  check('lifting preserves the hue (stays a blue-grey)',
+    lifted.b > lifted.r && Math.abs(lifted.g - lifted.b) < 40,
+    JSON.stringify(lifted))
+  check('an unparseable colour falls back',
+    readableOn('nonsense', BG, '#e6e6ea') === '#e6e6ea')
+  check('an undefined colour falls back', readableOn(undefined, BG, '#e6e6ea') === '#e6e6ea')
+
+  console.log('\n[character labels: telling variants apart]')
+  const cast2 = await scanCharacters(EPISODIC)
+  const find = (v: string) => cast2.find((c) => c.varName === v)
+  const label2 = buildLabeller(cast2)
+  const lbl = (v: string) => label2(v, find(v))
+  check('plain character has no variant marker',
+    lbl('ben').name === 'BEN' && lbl('ben').variant === null, JSON.stringify(lbl('ben')))
+  check('ben_thoughts is marked as thoughts',
+    lbl('ben_thoughts').name === 'BEN' && lbl('ben_thoughts').variant === 'thoughts',
+    JSON.stringify(lbl('ben_thoughts')))
+  check('ava_thoughts is marked too', lbl('ava_thoughts').variant === 'thoughts',
+    JSON.stringify(lbl('ava_thoughts')))
+  check('a unique short variable gets no badge (cora is "Cora Vale")',
+    lbl('cora').variant === null, JSON.stringify(lbl('cora')))
+  check('a uniquely named variant gets no badge either',
+    lbl('ava_alter').variant === null, JSON.stringify(lbl('ava_alter')))
+  check('cora_thoughts is marked from its group base',
+    lbl('cora_thoughts').variant === 'thoughts', JSON.stringify(lbl('cora_thoughts')))
+  check('nico_memory is marked as memory',
+    lbl('nico_memory').variant === 'memory', JSON.stringify(lbl('nico_memory')))
+  check('a differently named character keeps no badge',
+    lbl('nico_unknown').variant === null, JSON.stringify(lbl('nico_unknown')))
+  check('unknown speaker still renders', label2('nobody', undefined).name === 'NOBODY')
+
+  const flatCastAgain = await scanCharacters(FLAT)
+  const messenger = flatCastAgain.find((c) => c.varName === 'mara_msg')
+  const jl = buildLabeller(flatCastAgain)('mara_msg', messenger)
+  check('mara_msg reads as MARA with a msg marker',
+    jl.name === 'MARA' && jl.variant === 'msg', JSON.stringify(jl))
+  check('the whole messenger cast is found',
+    flatCastAgain.filter((c) => c.varName.endsWith('_msg')).length >= 7,
+    String(flatCastAgain.filter((c) => c.varName.endsWith('_msg')).length))
+
+  console.log('\n[portraits]')
+  const ava2 = cast2.find((c) => c.varName === 'ava')
+  check('portrait paths are recorded', Object.keys(ava2?.portraits ?? {}).length === 5,
+    String(Object.keys(ava2?.portraits ?? {}).length))
+  check('a known expression maps to its file',
+    ava2?.portraits['happy'] === 'portraits/ava_happy.png', String(ava2?.portraits['happy']))
+  check('the attribute-less default portrait is recorded',
+    ava2?.defaultPortrait === 'portraits/ava_happy.png', String(ava2?.defaultPortrait))
+  const thoughtsVariant = cast2.find((c) => c.varName === 'ava_thoughts')
+  check('a variant shares the base portraits',
+    thoughtsVariant?.portraits['happy'] === 'portraits/ava_happy.png',
+    String(thoughtsVariant?.portraits['happy']))
+
+  console.log('\n[font size markup]')
+  const s1 = adjustSize('hello world', 0, 5, 2)
+  check('grows a plain selection', s1.text === '{size=+2}hello{/size} world', s1.text)
+  const s2 = adjustSize(s1.text, s1.start, s1.end, 2)
+  check('growing again adjusts in place, not nested',
+    s2.text === '{size=+4}hello{/size} world', s2.text)
+  const s3 = adjustSize(s2.text, s2.start, s2.end, -4)
+  check('returning to zero removes the tags', s3.text === 'hello world', s3.text)
+  const s4 = adjustSize('abc', 0, 3, -2)
+  check('shrinks with a negative delta', s4.text === '{size=-2}abc{/size}', s4.text)
+  const s5 = adjustSize('{size=+2}abc{/size}', 0, '{size=+2}abc{/size}'.length, 2)
+  check('adjusts when the whole run is selected', s5.text === '{size=+4}abc{/size}', s5.text)
+  check('a zero delta changes nothing', adjustSize('abc', 0, 3, 0).text === 'abc')
+
+  console.log('\n[reference: storage]')
+  const emptyRef = await readReference(ws)
+  check('reads empty when nothing is written',
+    emptyRef.characters.length === 0 && emptyRef.locations.length === 0 &&
+    emptyRef.notes.length === 0 && emptyRef.characterOrder.length === 0)
+
+  await writeReference(ws, {
+    characters: [
+      { id: 'c1', varNames: ['nadia', 'nadia_thoughts'], name: 'Nadia', age: '22',
+        accent: 'Southerner', bio: 'Grew up in [[Little Rock]].', trivia: 'Hates mushrooms.' },
+      { id: 'c2', varNames: [], name: 'Unwritten Person', storyHooks: 'Shows up in act 3.' }
+    ],
+    characterOrder: ['c2', 'c1'],
+    locations: [{ id: 'l1', name: 'Little Rock', description: 'Where [[Nadia]] grew up.' }],
+    notes: [{ id: 'n1', title: 'Arc 2 End', body: 'See [[Little Rock]].',
+              updatedAt: '2026-01-01T00:00:00.000Z' }]
+  })
+  const back = await readReference(ws)
+  check('a profile can cover several variables',
+    back.characters[0].varNames.join(',') === 'nadia,nadia_thoughts',
+    back.characters[0].varNames.join(','))
+  check('trivia round-trips', back.characters[0].trivia === 'Hates mushrooms.')
+  check('a profile with no variables survives', back.characters[1].varNames.length === 0)
+  check('explicit ordering round-trips', back.characterOrder.join(',') === 'c2,c1')
+  check('locations round-trip', back.locations[0].name === 'Little Rock')
+  check('notes round-trip', back.notes[0].title === 'Arc 2 End')
+
+  check('reference is split across three files',
+    (await ws.exists('.renpywriter/characters.json')) &&
+    (await ws.exists('.renpywriter/locations.json')) &&
+    (await ws.exists('.renpywriter/notes.json')))
+
+  console.log('\n[reference: migrating the old single-variable format]')
+  await ws.writeText('.renpywriter/characters.json', JSON.stringify({
+    version: 1,
+    characters: [
+      { id: 'old1', varName: 'omar', name: 'Omar', bio: 'kept' },
+      { id: 'old2', varName: null, name: 'Nobody' }
+    ]
+  }))
+  const migrated = await readReference(ws)
+  check('a legacy varName becomes a one-item list',
+    migrated.characters[0].varNames.join(',') === 'omar', JSON.stringify(migrated.characters[0]))
+  check('a legacy null varName becomes an empty list',
+    migrated.characters[1].varNames.length === 0)
+  check('other fields survive migration', migrated.characters[0].bio === 'kept')
+  check('the legacy field is dropped', migrated.characters[0].varName === undefined)
+
+  await ws.writeText('.renpywriter/notes.json', 'this is not json{{{')
+  const survived = await readReference(ws)
+  check('a corrupt file degrades instead of throwing',
+    survived.notes.length === 0 && survived.characters.length === 2)
+
+  console.log('\n[reference: wiki links]')
+  const index = buildLinkIndex({
+    characters: [{ kind: 'character', id: 'nadia', name: 'Nadia' },
+                 { kind: 'character', id: 'denny', name: 'Denny' }],
+    locations: [{ kind: 'location', id: 'l1', name: 'Little Rock' }],
+    notes: [{ kind: 'note', id: 'n1', name: 'Arc 2 End' }]
+  })
+  const segs = parseLinks('Grew up in [[Little Rock]] with [[Denny]].', index)
+  check('splits text and links', segs.length === 5, String(segs.length))
+  check('resolves a location', segs[1].kind === 'link' && segs[1].target?.id === 'l1')
+  check('resolves a character', segs[3].kind === 'link' && segs[3].target?.id === 'denny')
+  check('keeps the surrounding prose',
+    segs.map((x) => (x.kind === 'text' ? x.text : '[[' + x.text + ']]')).join('') ===
+      'Grew up in [[Little Rock]] with [[Denny]].')
+
+  const unresolved = parseLinks('Meet [[Nobody]] later', index)
+  check('an unmatched link still renders, marked unresolved',
+    unresolved[1].kind === 'link' && unresolved[1].target === null)
+  check('matching ignores case', parseLinks('[[little rock]]', index)[0].kind === 'link' &&
+    (parseLinks('[[little rock]]', index)[0] as { target: { id: string } | null }).target?.id === 'l1')
+  check('plain text yields a single run', parseLinks('no links here', index).length === 1)
+  check('characters win over locations on a name clash',
+    buildLinkIndex({
+      characters: [{ kind: 'character', id: 'x', name: 'Dupe' }],
+      locations: [{ kind: 'location', id: 'y', name: 'Dupe' }],
+      notes: []
+    }).get('dupe')?.kind === 'character')
+  check('linkedNames lists every reference',
+    linkedNames('a [[One]] b [[Two]]').join(',') === 'One,Two')
+
+  console.log('\n[viewport anchor]')
+  const tops = [0, 100, 220, 340, 500]
+  check('picks the block containing the midpoint', centreIndex(tops, 250) === 2, String(centreIndex(tops, 250)))
+  check('a midpoint in a margin gap takes the block above it',
+    centreIndex(tops, 339) === 2, String(centreIndex(tops, 339)))
+  check('an exact boundary belongs to that block', centreIndex(tops, 340) === 3, String(centreIndex(tops, 340)))
+  check('above the first block yields nothing', centreIndex([10, 20], 5) === -1, String(centreIndex([10, 20], 5)))
+  check('past the last block yields the last', centreIndex(tops, 99999) === 4, String(centreIndex(tops, 99999)))
+  check('an empty list yields nothing', centreIndex([], 0) === -1)
+  check('a single block at zero is found', centreIndex([0], 0) === 0)
+  const many = Array.from({ length: 5000 }, (_, i) => i * 24)
+  check('scales to a full chapter', centreIndex(many, 24 * 3210 + 5) === 3210, String(centreIndex(many, 24 * 3210 + 5)))
+
+  console.log('\n[rename: writing a display name back to the script]')
+  await fs.mkdir(path.join(SCRATCH, 'game', 'scripts'), { recursive: true })
+  const realScript = await fs.readFile(path.join(EPISODIC, 'game', 'scripts', 'script.rpy'), 'utf8')
+  const scriptRel = 'game/scripts/script.rpy'
+  const restore = async () => fs.writeFile(path.join(SCRATCH, scriptRel), realScript, 'utf8')
+  await restore()
+
+  const castBefore = await scanCharacters(SCRATCH)
+  const avaDef = castBefore.find((c) => c.varName === 'ava')
+  check('scanner records where a character is defined',
+    avaDef?.sourceFile === scriptRel && typeof avaDef?.sourceLine === 'number',
+    avaDef?.sourceFile + ':' + avaDef?.sourceLine)
+
+  const r1 = await renameCharacter(ws, scriptRel, avaDef!.sourceLine!, 'ava', 'Ava Vale')
+  check('rename succeeds', r1.ok, r1.reason)
+  const after = await fs.readFile(path.join(SCRATCH, scriptRel), 'utf8')
+  check('the display name changed',
+    after.includes("define ava = Character('Ava Vale'"), 'not found')
+  check('everything else on the line survived',
+    after.includes('color="#ffffb2"') && after.includes('image="ava"'))
+  check('only one line differs',
+    after.split(String.fromCharCode(10)).filter((l, i) =>
+      l !== realScript.split(String.fromCharCode(10))[i]).length === 1)
+  check('the rest of the file is untouched byte for byte',
+    after.length - realScript.length === 'Ava Vale'.length - 'Ava'.length,
+    String(after.length - realScript.length))
+
+  const rescanned = await scanCharacters(SCRATCH)
+  check('a rescan sees the new name',
+    rescanned.find((c) => c.varName === 'ava')?.name === 'Ava Vale')
+  check('sibling characters kept their names',
+    rescanned.find((c) => c.varName === 'ava_thoughts')?.name === 'Ava')
+
+  await restore()
+  const guard1 = await renameCharacter(ws, scriptRel, avaDef!.sourceLine!, 'ben', 'Nope')
+  check('refuses when the line defines a different character', !guard1.ok, guard1.reason)
+  const guard2 = await renameCharacter(ws, scriptRel, 1, 'ava', 'Nope')
+  check('refuses when the line is not a define', !guard2.ok, guard2.reason)
+  const guard3 = await renameCharacter(ws, scriptRel, 999999, 'nadia', 'Nope')
+  check('refuses a line past the end', !guard3.ok, guard3.reason)
+  const guard4 = await renameCharacter(ws, scriptRel, avaDef!.sourceLine!, 'ava', '   ')
+  check('refuses an empty name', !guard4.ok, guard4.reason)
+  const guard5 = await renameCharacter(ws, 'game/scripts/nope.rpy', 1, 'nadia', 'X')
+  check('refuses a missing file', !guard5.ok, guard5.reason)
+  check('no guard rewrote anything',
+    (await fs.readFile(path.join(SCRATCH, scriptRel), 'utf8')) === realScript)
+
+  const quoted = await renameCharacter(ws, scriptRel, avaDef!.sourceLine!, 'ava', "O'Hara")
+  check('an apostrophe is escaped for the single-quoted literal', quoted.ok, quoted.reason)
+  const withQuote = await scanCharacters(SCRATCH)
+  check('the escaped name scans back correctly',
+    withQuote.find((c) => c.varName === 'ava')?.name === "O'Hara",
+    withQuote.find((c) => c.varName === 'ava')?.name)
+  await restore()
+
+  console.log('\n[image resolution for scene/show]')
+  const TC = EPISODIC
+
+  // Every name the sample project actually stages.
+  const chapterFiles = (await fs.readdir(path.join(TC, 'game', 'scripts')))
+    .filter((f) => f.startsWith('chapter_'))
+  let staged = ''
+  for (const f of chapterFiles) {
+    staged += await fs.readFile(path.join(TC, 'game', 'scripts', f), 'utf8')
+  }
+  const used = [...new Set(staged.split(String.fromCharCode(10))
+    .map((l) => l.trim()).map((l) => l.match(/^\s*scene\s+([a-z0-9_ ]+?)(?:\s+(?:with|at|as|behind|onlayer|zorder)\b.*)?$/i))
+    .filter(Boolean).map((m) => m![1].trim()))]
+  // Only scene names map one-to-one onto image files. A `show` name resolves
+  // through the portrait index, which is a different question from this one.
+  check('found scene names to resolve', used.length >= 3, String(used.length))
+
+  // A miss is expected when the render has not been made yet, so check the
+  // resolver against what is actually on disk rather than a hit rate.
+  const imageFiles = new Set<string>()
+  const walkImages = async (dir: string): Promise<void> => {
+    for (const e of await fs.readdir(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) await walkImages(path.join(dir, e.name))
+      else imageFiles.add(e.name.replace(/[.][^.]+$/, '').toLowerCase())
+    }
+  }
+  await walkImages(TC + '/game/images')
+
+  const wrong: string[] = []
+  for (const n of used) {
+    const r = await resolveImageName(TC, n)
+    const onDisk = imageFiles.has(n.toLowerCase())
+    const gotSomething = !!r.dataUrl || r.kind === 'video' || r.kind === 'color'
+    // A file can exist and still be overridden by an explicit declaration, so
+    // only an unexplained miss counts as wrong.
+    if (!onDisk && gotSomething && r.kind !== 'color') wrong.push(n + ' (resolved, not on disk)')
+    if (onDisk && !gotSomething && !r.matched) wrong.push(n + ' (on disk, silently unresolved)')
+  }
+  check('every name resolves exactly when its file exists',
+    wrong.length === 0, wrong.slice(0, 4).join('; '))
+  // Deliberately not "the project still has some missing renders": that was an
+  // assumption about live artwork, and it stopped holding the moment the render
+  // sync filled the gaps in. The behaviour worth pinning is that a name with no
+  // file resolves to nothing and says why.
+  const invented = await resolveImageName(TC, 'zz_no_such_render_' + Date.now())
+  check('a name with no render resolves to nothing',
+    !invented.dataUrl && !invented.matched, JSON.stringify(invented).slice(0, 120))
+  check('nothing is invented for it either',
+    !invented.kind && !invented.color, JSON.stringify(invented))
+
+  const one = await resolveImageName(TC, 'bg_kitchen')
+  check('a scene image resolves to a data URL',
+    !!one.dataUrl && one.dataUrl.startsWith('data:image/'), String(one.reason ?? one.dataUrl?.slice(0, 24)))
+  check('it reports which name matched', one.matched === 'bg_kitchen', String(one.matched))
+
+  const black = await resolveImageName(TC, 'black')
+  check('an explicit colour declaration is reported as a colour',
+    black.kind === 'color' && black.color === '#000', JSON.stringify(black))
+
+  const attrs = await resolveImageName(TC, 'bg_kitchen with dissolve')
+  check('trailing words fall back to a shorter name',
+    attrs.matched === 'bg_kitchen', String(attrs.matched))
+
+  const movie = await resolveImageName(TC, 'ep1_walk_anim')
+  check('a Movie image is reported as video rather than inlined',
+    movie.dataUrl === null && (movie.kind === 'video' || !!movie.reason),
+    JSON.stringify(movie))
+
+  const nope = await resolveImageName(TC, 'definitely_not_an_image_xyz')
+  check('an unknown name resolves to nothing', nope.dataUrl === null && !nope.matched)
+  check('an empty name is safe', (await resolveImageName(TC, '   ')).dataUrl === null)
+
+  const portrait = await readPortrait(TC, 'portraits/ava_happy.png')
+  check('portraits still resolve through the shared index',
+    !!portrait && portrait.startsWith('data:image/png'), String(portrait?.slice(0, 20)))
+
+  {
+
+  console.log('\n[image hover: finding the name under the pointer]')
+  const nameAt = (line: string, col: number) => imageNameAt(line, 0, col)
+  const scene = '    scene ch9_diner_1 with Fade(1, 1, 2)'
+  const hit = nameAt(scene, 12)
+  check('finds the name after scene', hit?.name === 'ch9_diner_1', JSON.stringify(hit))
+  check('the span covers just the name',
+    hit !== null && scene.slice(hit.from, hit.to) === 'ch9_diner_1',
+    hit ? scene.slice(hit.from, hit.to) : 'none')
+  check('stops before the with clause', nameAt(scene, 32) === null, JSON.stringify(nameAt(scene, 32)))
+  check('nothing before the name', nameAt(scene, 6) === null)
+
+  const show = '    show nadia happy at left'
+  const s2 = nameAt(show, 16)
+  check('keeps attributes as part of the name', s2?.name === 'nadia happy', JSON.stringify(s2))
+  check('stops before at', nameAt(show, 25) === null)
+
+  check('ignores dialogue lines', nameAt('    omar "Kde se flaka?"', 10) === null)
+  check('ignores a bare scene', nameAt('    scene', 8) === null)
+  check('handles no indentation', nameAt('scene black', 8)?.name === 'black')
+  check('handles extra spacing', nameAt('  scene   x_1   with dissolve', 12)?.name === 'x_1',
+    JSON.stringify(nameAt('  scene   x_1   with dissolve', 12)))
+  }
+
+  console.log('\n[restructure: moving beats between files]')
+  {
+    const L = String.fromCharCode(10)
+    const mk = (...ls: string[]) => ls.join(L) + L
+
+    // Three labels, all explicitly jumping onward.
+    const linked = mk(
+      'label A:', '    a "one"', '    jump B', '',
+      'label B:', '    b "two"', '    jump C', '',
+      'label C:', '    c "three"', '    return'
+    )
+
+    const within = moveBeat({ source: linked, target: null, label: 'C', toIndex: 0, linear: false })
+    check('the block moves to the front',
+      within.source.indexOf('label C:') < within.source.indexOf('label A:'),
+      within.source.slice(0, 40))
+    check('the moved block keeps its body', within.source.includes('c "three"'))
+    check('every label survives the move',
+      ['A', 'B', 'C'].every((n) => within.source.includes('label ' + n + ':')))
+    check('non-linear leaves existing jumps alone',
+      within.source.includes('jump B') && within.source.includes('jump C'))
+
+    const relinked = moveBeat({ source: linked, target: null, label: 'C', toIndex: 0, linear: true })
+    const order = ['A', 'B', 'C'].map((n) => relinked.source.indexOf('label ' + n + ':'))
+    check('linear reorders the file', order[2] < order[0] && order[0] < order[1],
+      JSON.stringify(order))
+    check('linear refuses to rewrite a return', /label C:[\s\S]*?return/.test(relinked.source),
+      'C should still end in return')
+    check('and says why the order could not be applied',
+      relinked.warnings.some((w) => w.includes('C') && w.includes('control flow')),
+      JSON.stringify(relinked.warnings))
+    check('linear points A at B', /label A:[\s\S]*?jump B/.test(relinked.source), 'no A->B')
+    check('linear leaves the last label alone', relinked.source.includes('return'))
+
+    // Fall-through must become explicit before anything moves.
+    const falls = mk(
+      'label A:', '    a "one"', '',
+      'label B:', '    b "two"', '',
+      'label C:', '    c "three"'
+    )
+    const moved = moveBeat({ source: falls, target: null, label: 'B', toIndex: 2, linear: false })
+    check('a moved fall-through is written out as a jump',
+      /label B:[\s\S]*?jump C/.test(moved.source), moved.source)
+    check('the former predecessor also gets an explicit jump',
+      /label A:[\s\S]*?jump B/.test(moved.source), moved.source)
+    check('the materialised jumps are reported', moved.materialised.length >= 2,
+      JSON.stringify(moved.materialised))
+    check('story order is unchanged despite the new file order',
+      moved.source.indexOf('label C:') < moved.source.indexOf('label B:'),
+      'B should now sit after C in the file')
+
+    // Across two files.
+    const epOne = mk('label A:', '    a "one"', '    jump B', '', 'label B:', '    b "two"', '    return')
+    const epTwo = mk('label X:', '    x "hello"', '    return')
+    const across = moveBeat({ source: epOne, target: epTwo, label: 'B', toIndex: -1, linear: false })
+    check('the beat leaves the source file', !across.source.includes('label B:'), across.source)
+    check('the beat arrives in the target file', across.target.includes('label B:'))
+    check('its body travels with it', across.target.includes('b "two"'))
+    check('the source keeps its other label', across.source.includes('label A:'))
+    check('the target keeps its own label', across.target.includes('label X:'))
+    check('a jump into the moved beat still points at it, across files',
+      across.source.includes('jump B'), across.source)
+    check('a blank line separates appended blocks',
+      /return\s*\n\s*\n\s*label B:/.test(across.target), JSON.stringify(across.target))
+
+    // Inserting in the middle of the target materialises the new predecessor.
+    const epThree = mk('label X:', '    x "hi"', '', 'label Y:', '    y "yo"')
+    const middle = moveBeat({ source: epOne, target: epThree, label: 'B', toIndex: 1, linear: false })
+    check('the beat lands between the target labels',
+      middle.target.indexOf('label X:') < middle.target.indexOf('label B:') &&
+      middle.target.indexOf('label B:') < middle.target.indexOf('label Y:'),
+      middle.target)
+    check('the label it was inserted after gets an explicit jump',
+      /label X:[\s\S]*?jump Y/.test(middle.target), middle.target)
+
+    // Guards and edge cases.
+    const missing = moveBeat({ source: epOne, target: null, label: 'NOPE', toIndex: 0, linear: false })
+    check('an unknown label is refused', !!missing.error, String(missing.error))
+    check('a refused move changes nothing', missing.source === epOne)
+
+    const single = mk('label ONLY:', '    a "x"', '    return')
+    const noop = moveBeat({ source: single, target: null, label: 'ONLY', toIndex: 0, linear: true })
+    check('moving the only label is harmless', noop.source.includes('label ONLY:'), noop.source)
+
+    const crlf = 'label A:\r\n    a "one"\r\n    jump B\r\n\r\nlabel B:\r\n    b "two"\r\n'
+    const crlfMoved = moveBeat({ source: crlf, target: null, label: 'B', toIndex: 0, linear: false })
+    check('CRLF files stay CRLF',
+      !/[^\r]\n/.test(crlfMoved.source), JSON.stringify(crlfMoved.source))
+
+    // Hand-authored endings are never rewritten.
+    const branchy = mk(
+      'label A:', '    menu:', '        "go":', '            jump B', '',
+      'label B:', '    b "two"', '    jump C', '',
+      'label C:', '    c "three"', '    return'
+    )
+    const branchMoved = moveBeat({ source: branchy, target: null, label: 'C', toIndex: 1, linear: true })
+    check('a menu ending is left untouched', branchMoved.source.includes('menu:') &&
+      branchMoved.source.includes('"go":'), branchMoved.source)
+    check('the menu label gains no trailing jump',
+      !/jump B\s*\n\s*\n\s*label/.test(branchMoved.source.split('label B:')[0].replace('            jump B', '')),
+      'unexpected jump added after the menu')
+  }
+
+  console.log('\n[translation: deciding what needs translating]')
+  {
+    // Real lines from chapter_9_2.
+    const czech = [
+      'Kde se fláká?',
+      'Možná usnul na záchodě.',
+      'Prej přijde za chvilku, je mu blbě.',
+      'Nic nevydrží...',
+      'Neměla bych jít za ním?'
+    ]
+    const english = [
+      "Answer me. And no bullshit.",
+      'You... killed him?',
+      'I had no idea. Dave mi nic neřekl.',
+      "That's a big knife you've got there.",
+      'I know, it was hard-'
+    ]
+    check('Czech lines are marked for translation',
+      czech.every((l) => classifyLine(l) === 'source'),
+      JSON.stringify(czech.map(classifyLine)))
+    check('English lines are left alone',
+      english.slice(0, 2).concat(english.slice(3)).every((l) => classifyLine(l) === 'target'),
+      JSON.stringify(english.map(classifyLine)))
+    check('a mixed line counts as needing work', classifyLine(english[2]) === 'source',
+      classifyLine(english[2]))
+
+    check('diacritics settle it on their own', classifyLine('Ano') === 'unknown' &&
+      classifyLine('Ano, jsem tady') === 'source', classifyLine('Ano, jsem tady'))
+    check('markup is ignored when classifying',
+      classifyLine('{i}Nejsem na to hrdej{/i}') === 'source',
+      classifyLine('{i}Nejsem na to hrdej{/i}'))
+    check('interpolation is ignored when classifying',
+      classifyLine('Hello [player_name], how are you?') === 'target',
+      classifyLine('Hello [player_name], how are you?'))
+    check('an empty line needs nothing', classifyLine('   ') === 'target')
+    check('markup-only needs nothing', classifyLine('{w=1.0}') === 'target')
+    check('needsTranslation follows the classification',
+      needsTranslation('Kde se fláká?') && !needsTranslation('What are you doing?'))
+  }
+
+  console.log('\n[translation: the prompt]')
+  {
+    const units = [
+      { id: 1, text: 'Kde se fláká?', speaker: 'Omar', accent: 'Ghetto' },
+      { id: 2, text: 'Ano.', speaker: 'Nadia' },
+      { id: 3, text: 'Odejít', speaker: null, isChoice: true }
+    ]
+    const prompt = buildPrompt(units, 'cs', 'en')
+    check('the prompt names both languages', prompt.includes('cs') && prompt.includes('en'))
+    check('a character accent is passed through', prompt.includes('Omar: Ghetto'), prompt)
+    check('a character with no accent adds no voice line', !prompt.includes('Nadia:'))
+    check('choices are marked as choices', prompt.includes('CHOICE'))
+    check('narrator lines are labelled', buildPrompt(
+      [{ id: 1, text: 'x', speaker: null }], 'cs', 'en').includes('NARRATOR'))
+    check('markup preservation is demanded', prompt.includes('{i}'))
+    check('every line is carried with its id',
+      units.every((u) => prompt.includes('"id":' + u.id)), prompt)
+
+    const good = parseResponse('{"translations":[{"id":1,"text":"Where is he?"}]}')
+    check('a clean reply parses', good.byId.get(1) === 'Where is he?')
+    const fenced = parseResponse('Sure!\n```json\n{"translations":[{"id":2,"text":"Yes."}]}\n```')
+    check('a fenced reply with preamble parses', fenced.byId.get(2) === 'Yes.', JSON.stringify(fenced))
+    const braces = parseResponse('{"translations":[{"id":3,"text":"a } brace in a string"}]}')
+    check('braces inside strings do not confuse it',
+      braces.byId.get(3) === 'a } brace in a string', JSON.stringify(braces))
+    check('a reply with no JSON is reported', !!parseResponse('I cannot do that').error)
+    check('malformed JSON is reported', !!parseResponse('{"translations": [').error)
+    check('a reply with no translations is reported', !!parseResponse('{"other":1}').error)
+  }
+
+  console.log('\n[translation: applying results to a script]')
+  {
+    const L = String.fromCharCode(10)
+    const script = [
+      'label D17_TEST:',
+      '    # Omar is on the bed',
+      '    scene bg_kitchen',
+      '    omar "Kde se fláká?"',
+      '    nadia "Answer me. And no bullshit."',
+      '    omar serious "{i}Nejsem na to hrdej{/i}, ale uz me to sralo."',
+      '    "Narrator line, ktera je ceska."',
+      '    menu:',
+      '        "Odejit":',
+      '            jump SOMEWHERE',
+      '    return',
+      ''
+    ].join(L)
+
+    let sent = ''
+    const fake = async (prompt) => {
+      sent = prompt
+      const ids = [...prompt.matchAll(/"id":(\d+)/g)].map((m) => Number(m[1]))
+      const texts = [...prompt.matchAll(/"text":("(?:[^"\\]|\\.)*")/g)].map((m) => JSON.parse(m[1]))
+      return {
+        ok: true,
+        output: JSON.stringify({
+          translations: ids.map((id, i) => ({ id, text: 'EN<' + texts[i] + '>' }))
+        })
+      }
+    }
+
+    const cast = [
+      { varName: 'omar', name: 'Omar', expressions: [], portraits: {} },
+      { varName: 'nadia', name: 'Nadia', expressions: [], portraits: {} }
+    ]
+    const profiles = [
+      { id: 'p1', varNames: ['omar'], name: 'Omar', accent: 'Ghetto' }
+    ]
+
+    const result = await runPass(script,
+      { mode: 'translate' as const, sourceLanguage: 'cs', targetLanguage: 'en', cast, profiles }, fake)
+
+    check('the already-English line was skipped', result.skipped === 1, String(result.skipped))
+    check('the English line is untouched in the output',
+      result.content.includes('nadia "Answer me. And no bullshit."'), result.content)
+    check('Czech dialogue was translated',
+      result.content.includes('omar "EN<Kde se fláká?>"'), result.content)
+    check('a narrator line was translated',
+      result.content.includes('"EN<Narrator line, ktera je ceska.>"'))
+    check('a menu choice was translated',
+      result.content.includes('"EN<Odejit>":'), result.content)
+    check('the expression attribute survived',
+      /omar serious "EN</.test(result.content), result.content)
+    check('comments are not translated', result.content.includes('# Omar is on the bed'))
+    check('code lines are untouched',
+      result.content.includes('scene bg_kitchen') &&
+      result.content.includes('jump SOMEWHERE') &&
+      result.content.includes('label D17_TEST:'))
+    check('the speaker accent reached the prompt', sent.includes('Omar: Ghetto'), sent.slice(0, 200))
+    check('changes are reported with before and after',
+      result.changes.length === 4 &&
+      result.changes.every((c) => c.before && c.after && c.line > 0),
+      JSON.stringify(result.changes.map((c) => c.line)))
+    check('the line numbers point at the right lines',
+      result.changes[0].line === 4, JSON.stringify(result.changes[0]))
+
+    // Restricting to a selection.
+    const partial = await runPass(script,
+      { mode: 'translate' as const, sourceLanguage: 'cs', targetLanguage: 'en', cast, profiles, lines: [4] }, fake)
+    check('a line restriction limits what is sent', partial.changes.length === 1,
+      JSON.stringify(partial.changes.map((c) => c.line)))
+    check('lines outside the selection are untouched',
+      partial.content.includes('"Narrator line, ktera je ceska."'), partial.content)
+
+    // A failing runner must not touch the script.
+    const failing = async () => ({ ok: false, output: '', error: 'CLI not found' })
+    const failed = await runPass(script,
+      { mode: 'translate' as const, sourceLanguage: 'cs', targetLanguage: 'en', cast, profiles }, failing)
+    check('a failed run reports the error', failed.error === 'CLI not found', String(failed.error))
+    check('a failed run leaves the script alone', failed.content === script)
+
+    // A reply missing some ids applies only what came back.
+    const partialReply = async () => ({
+      ok: true, output: '{"translations":[{"id":1,"text":"Only this one"}]}'
+    })
+    const some = await runPass(script,
+      { mode: 'translate' as const, sourceLanguage: 'cs', targetLanguage: 'en', cast, profiles }, partialReply)
+    check('a partial reply applies only what it returned', some.changes.length === 1,
+      JSON.stringify(some.changes.map((c) => c.after)))
+    check('the untranslated lines keep their original text',
+      some.content.includes('"Narrator line, ktera je ceska."'))
+
+    // Nothing to do.
+    const englishOnly = 'label X:' + L + '    a "Hello there."' + L
+    const nothing = await runPass(englishOnly,
+      { mode: 'translate' as const, sourceLanguage: 'cs', targetLanguage: 'en', cast, profiles }, fake)
+    check('an all-English script is left alone', nothing.content === englishOnly &&
+      nothing.changes.length === 0, String(nothing.changes.length))
+
+    // Batching.
+    let calls = 0
+    const counting = async (prompt) => {
+      calls++
+      const ids = [...prompt.matchAll(/"id":(\d+)/g)].map((m) => Number(m[1]))
+      return { ok: true, output: JSON.stringify({ translations: ids.map((id) => ({ id, text: 'x' })) }) }
+    }
+    const many = 'label Y:' + L +
+      Array.from({ length: 7 }, (_, i) => '    a "Ceska veta cislo ' + i + ', jsem tady."').join(L) + L
+    await runPass(many,
+      { mode: 'translate' as const, sourceLanguage: 'cs', targetLanguage: 'en', cast, profiles, batchSize: 3 }, counting)
+    check('long scripts are sent in batches', calls === 3, String(calls))
+  }
+
+  console.log('\n[accounts and sessions]')
+  {
+    const os = await import('node:os')
+    const fsp = (await import('node:fs')).promises
+    const nodePath = await import('node:path')
+
+    const dir = nodePath.join(os.tmpdir(), 'rpw-auth-' + Date.now())
+    await fsp.mkdir(dir, { recursive: true })
+    const users = createUserStore(dir)
+    const sessions = createSessionStore(dir)
+
+    check('a fresh installation has no accounts', (await users.count()) === 0)
+
+    const admin = await users.create({
+      username: 'Jan', password: 'correct horse battery', role: 'admin'
+    })
+    check('a username is stored lowercase', admin.username === 'jan', admin.username)
+    check('the account has a role', admin.role === 'admin', admin.role)
+
+    const stored = JSON.parse(await fsp.readFile(nodePath.join(dir, 'users.json'), 'utf8'))
+    check('the password itself is never written',
+      !JSON.stringify(stored).includes('correct horse battery'),
+      JSON.stringify(stored).slice(0, 80))
+    check('what is written is a salt and a hash',
+      !!stored.users[0].salt && !!stored.users[0].hash && stored.users[0].hash.length > 20)
+    check('two accounts with the same password get different hashes',
+      (await users.create({ username: 'ada', password: 'correct horse battery', role: 'writer' })) &&
+      (await (async () => {
+        const both = JSON.parse(await fsp.readFile(nodePath.join(dir, 'users.json'), 'utf8'))
+        return both.users[0].hash !== both.users[1].hash
+      })()))
+
+    check('the right password is accepted',
+      (await users.verify('jan', 'correct horse battery'))?.id === admin.id)
+    check('the name is matched regardless of case',
+      (await users.verify('JAN', 'correct horse battery'))?.id === admin.id)
+    check('a wrong password is refused',
+      (await users.verify('jan', 'correct horse batteru')) === null)
+    check('an unknown account is refused',
+      (await users.verify('nobody', 'correct horse battery')) === null)
+    check('an empty password is refused', (await users.verify('jan', '')) === null)
+
+    const short = await users.create({ username: 'x', password: 'short', role: 'viewer' })
+      .then(() => null, (e) => e.message)
+    check('a short password is refused with a reason',
+      (short ?? '').includes('12 characters'), String(short))
+
+    const duplicate = await users.create({
+      username: 'jan', password: 'another long password', role: 'writer'
+    }).then(() => null, (e) => e.message)
+    check('a duplicate username is refused', (duplicate ?? '').includes('already an account'),
+      String(duplicate))
+
+    const lastAdmin = await users.remove(admin.id).then(() => null, (e) => e.message)
+    check('the only administrator cannot be removed',
+      (lastAdmin ?? '').includes('only administrator'), String(lastAdmin))
+
+    // Sessions.
+    const session = await sessions.create(admin.id)
+    check('a session id is long and random', session.id.length >= 40, String(session.id.length))
+    check('a session can be looked up', (await sessions.get(session.id))?.userId === admin.id)
+    check('an invented session is not found', (await sessions.get('made-up')) === null)
+    check('an empty session id is not found', (await sessions.get('')) === null)
+
+    await sessions.destroy(session.id)
+    check('signing out ends the session', (await sessions.get(session.id)) === null)
+
+    const expired = await sessions.create(admin.id)
+    const raw = JSON.parse(await fsp.readFile(nodePath.join(dir, 'sessions.json'), 'utf8'))
+    raw.sessions[0].expiresAt = Date.now() - 1000
+    await fsp.writeFile(nodePath.join(dir, 'sessions.json'), JSON.stringify(raw), 'utf8')
+    check('an expired session is not accepted', (await sessions.get(expired.id)) === null)
+
+    await fsp.rm(dir, { recursive: true, force: true })
+  }
+
+  console.log('\n[who may do what]')
+  {
+    const asRole = (role) => ({ id: 'u', username: 'u', role, createdAt: '' })
+
+    check('reading is allowed for everyone',
+      ['admin', 'writer', 'proofreader', 'viewer']
+        .every((r) => mayPerform(asRole(r), IPC.readEpisode)))
+    check('an admin may write', mayPerform(asRole('admin'), IPC.writeEpisode))
+    check('a writer may write', mayPerform(asRole('writer'), IPC.writeEpisode))
+    check('a proofreader may not write yet', !mayPerform(asRole('proofreader'), IPC.writeEpisode))
+    check('a viewer may not write', !mayPerform(asRole('viewer'), IPC.writeEpisode))
+    check('a proofreader is told what is coming instead of just refused',
+      refusalFor(asRole('proofreader'), IPC.writeEpisode).includes('Suggestions'),
+      refusalFor(asRole('proofreader'), IPC.writeEpisode))
+
+    check('committing counts as writing', isWrite(IPC.gitCommit))
+    check('translating counts as writing', isWrite(IPC.runScriptPass))
+    check('moving a beat counts as writing', isWrite(IPC.moveBeat))
+    check('reading a script does not', !isWrite(IPC.readEpisode))
+    check('reading git status does not', !isWrite(IPC.gitStatus))
+
+    // Every operation is either named a write or is a read on purpose; this
+    // catches a new one being added and silently treated as readable.
+    const unclassified = Object.values(IPC).filter(
+      (channel) => !isWrite(channel) && /write|create|update|set|move|remove|commit|push|pull|convert|rename|pass/i.test(channel)
+    )
+    check('no changing operation is left unclassified', unclassified.length === 0,
+      JSON.stringify(unclassified))
+  }
+
+  console.log('\n[slowing down guessing]')
+  {
+    const limiter = createAttemptLimiter({ max: 3, windowMs: 60000 })
+    check('the first attempt is allowed', limiter.check('a').allowed)
+    limiter.fail('a')
+    limiter.fail('a')
+    check('a couple of failures are still allowed', limiter.check('a').allowed)
+    limiter.fail('a')
+    check('too many failures are stopped', !limiter.check('a').allowed)
+    check('and it says when to try again', (limiter.check('a').retryInSeconds ?? 0) > 0,
+      String(limiter.check('a').retryInSeconds))
+    check('a different account is unaffected', limiter.check('b').allowed)
+    limiter.succeed('a')
+    check('signing in clears the count', limiter.check('a').allowed)
+  }
+
+  console.log('\n[cookies]')
+  {
+    const cookie = sessionCookie('abc123', true)
+    check('the cookie is not readable from script', cookie.includes('HttpOnly'), cookie)
+    check('it is not sent on requests other sites start',
+      cookie.includes('SameSite=Strict'), cookie)
+    check('it is marked secure behind HTTPS', cookie.includes('Secure'), cookie)
+    check('and not marked secure on plain loopback',
+      !sessionCookie('abc123', false).includes('Secure'), sessionCookie('abc123', false))
+    check('clearing it expires it immediately',
+      clearedCookie(false).includes('Max-Age=0'), clearedCookie(false))
+
+    const req = (cookies?: string, origin?: string, host?: string) =>
+      ({ headers: { cookie: cookies, origin, host } }) as never
+    check('a cookie is read out of a header',
+      readCookie(req('a=1; rpw_session=xyz; b=2'), 'rpw_session') === 'xyz')
+    check('a missing cookie reads as nothing',
+      readCookie(req('a=1'), 'rpw_session') === null)
+    check('no cookie header at all reads as nothing',
+      readCookie(req(undefined), 'rpw_session') === null)
+
+    check('a request from the same origin is allowed',
+      originAllowed(req(undefined, 'https://write.example', 'write.example')))
+    check('a request from another site is refused',
+      !originAllowed(req(undefined, 'https://evil.example', 'write.example')))
+    check('a request with no origin is allowed, since the cookie rules still apply',
+      originAllowed(req(undefined, undefined, 'write.example')))
+    check('a malformed origin is refused',
+      !originAllowed(req(undefined, 'not a url', 'write.example')))
+
+    // A Secure cookie never comes back over plain HTTP, so the server has to
+    // know which it was: otherwise signing in looks fine and then does nothing.
+    const overHttp = { socket: {}, headers: {} } as never
+    const overTls = { socket: { encrypted: true }, headers: {} } as never
+    const behindProxy = { socket: {}, headers: { 'x-forwarded-proto': 'https' } } as never
+    const proxyChain = { socket: {}, headers: { 'x-forwarded-proto': 'https, http' } } as never
+    check('a plain connection is not mistaken for HTTPS', !arrivedOverHttps(overHttp))
+    check('a TLS connection is recognised', arrivedOverHttps(overTls))
+    check('so is one a proxy vouches for', arrivedOverHttps(behindProxy))
+    check('and only the first hop of a chain counts', arrivedOverHttps(proxyChain))
+    check('a proxy reporting plain http is not HTTPS',
+      !arrivedOverHttps({ socket: {}, headers: { 'x-forwarded-proto': 'http' } } as never))
+  }
+
+  console.log('\n[git sync]')
+  {
+    const os = await import('node:os')
+    const fsp = (await import('node:fs')).promises
+    const nodePath = await import('node:path')
+    const { spawn } = await import('node:child_process')
+
+    const git = (cwd: string, args: string[]) =>
+      new Promise<number>((resolve) => {
+        const child = spawn('git', args, { cwd, stdio: 'ignore' })
+        child.on('error', () => resolve(-1))
+        child.on('close', (code) => resolve(code ?? -1))
+      })
+
+    const base = nodePath.join(os.tmpdir(), 'rpw-git-' + Date.now())
+    const remote = nodePath.join(base, 'remote.git')
+    const nadia = nodePath.join(base, 'nadia')
+    const bob = nodePath.join(base, 'bob')
+    await fsp.mkdir(base, { recursive: true })
+
+    const available = (await git(base, ['--version'])) === 0
+    check('git is available to test against', available)
+
+    if (available) {
+      await git(base, ['init', '--bare', '--initial-branch=main', remote])
+      await git(base, ['clone', '--quiet', remote, nadia])
+      const identify = async (dir: string, who: string) => {
+        await git(dir, ['config', 'user.name', who])
+        await git(dir, ['config', 'user.email', who + '@example.com'])
+      }
+      await identify(nadia, 'nadia')
+
+      // A project shaped like the real one.
+      await fsp.mkdir(nodePath.join(nadia, 'game', 'scripts'), { recursive: true })
+      await fsp.mkdir(nodePath.join(nadia, 'game', 'images', 'ch1'), { recursive: true })
+      await fsp.mkdir(nodePath.join(nadia, '.renpywriter'), { recursive: true })
+      const L = String.fromCharCode(10)
+      await fsp.writeFile(nodePath.join(nadia, 'game', 'scripts', 'chapter_1.rpy'),
+        'label start:' + L + '    "Hello."' + L)
+      await fsp.writeFile(nodePath.join(nadia, '.renpywriter', 'project.json'), '{}')
+      await fsp.writeFile(nodePath.join(nadia, 'game', 'images', 'ch1', 'shot.webp'), 'not really')
+
+      const fresh = await readStatus(nadia)
+      check('a new file shows as untracked', fresh.changes.length === 3 &&
+        fresh.changes.every((c) => c.state === 'untracked'),
+        JSON.stringify(fresh.changes))
+      check('changes are grouped by what they are',
+        fresh.changes.find((c) => c.path.endsWith('.rpy'))?.group === 'script' &&
+        fresh.changes.find((c) => c.path.endsWith('.webp'))?.group === 'image' &&
+        fresh.changes.find((c) => c.path.startsWith('.renpywriter'))?.group === 'reference',
+        JSON.stringify(fresh.changes.map((c) => c.path + ':' + c.group)))
+      check('the branch and its remote are reported',
+        fresh.isRepo && fresh.branch === 'main', JSON.stringify({ branch: fresh.branch }))
+      check('the identity is picked up', fresh.identity.name === 'nadia',
+        JSON.stringify(fresh.identity))
+
+      // Only what is named gets committed.
+      const partial = await commit(nadia, {
+        message: 'First scene',
+        paths: ['game/scripts/chapter_1.rpy']
+      })
+      check('committing succeeds', partial.ok, partial.message + ' ' + (partial.detail ?? ''))
+      const afterPartial = await readStatus(nadia)
+      check('only the named file was committed',
+        afterPartial.changes.length === 2 &&
+        afterPartial.changes.every((c) => c.path !== 'game/scripts/chapter_1.rpy'),
+        JSON.stringify(afterPartial.changes.map((c) => c.path)))
+      // Ahead/behind only mean anything once the remote branch exists, which
+      // it does not in a freshly cloned empty repository.
+      check('nothing is claimed about a remote branch that does not exist yet',
+        afterPartial.ahead === 0 && afterPartial.behind === 0,
+        afterPartial.ahead + '/' + afterPartial.behind)
+
+      const pushed = await commit(nadia, {
+        message: 'Notes and art',
+        paths: ['.renpywriter/project.json', 'game/images/ch1/shot.webp'],
+        push: true
+      })
+      check('committing and pushing succeeds', pushed.ok, pushed.message + ' ' + (pushed.detail ?? ''))
+      check('the push is reported as sent', pushed.message.includes('Sent 2 commits to origin'),
+        pushed.message)
+
+      // With the branch established on the remote, ahead becomes meaningful.
+      const L2 = String.fromCharCode(10)
+      await fsp.writeFile(nodePath.join(nadia, 'game', 'scripts', 'chapter_0.rpy'),
+        'label zero:' + L2)
+      await commit(nadia, { message: 'Held back', paths: ['game/scripts/chapter_0.rpy'] })
+      const held = await readStatus(nadia)
+      check('a commit that has not been sent shows as ahead', held.ahead === 1, String(held.ahead))
+      check('and is not mistaken for work already up for review',
+        held.awaitingReview === null, String(held.awaitingReview))
+      check('and names the branch it would go to', held.upstream === 'origin/main',
+        String(held.upstream))
+      // A commit already recorded can be sent on its own, without inventing
+      // another commit to carry it.
+      const sending = await push(nadia)
+      check('a stranded commit can be sent by itself',
+        sending.ok && sending.message.includes('Sent 1 commit'), sending.message)
+      const sent = await readStatus(nadia)
+      check('after sending, nothing is left ahead', sent.ahead === 0, String(sent.ahead))
+      check('sending again has nothing to do', (await push(nadia)).message === 'Nothing to send.',
+        (await push(nadia)).message)
+
+      // The second machine gets everything, images included.
+      await git(base, ['clone', '--quiet', remote, bob])
+      await identify(bob, 'bob')
+      const bobHasImage = await fsp
+        .readFile(nodePath.join(bob, 'game', 'images', 'ch1', 'shot.webp'), 'utf8')
+        .catch(() => null)
+      check('the other machine receives the images too', bobHasImage === 'not really',
+        String(bobHasImage))
+      const bobHasScript = await fsp
+        .readFile(nodePath.join(bob, 'game', 'scripts', 'chapter_1.rpy'), 'utf8')
+        .catch(() => null)
+      check('and the scripts', (bobHasScript ?? '').includes('Hello.'), String(bobHasScript))
+
+      // A change on one machine reaches the other.
+      await fsp.writeFile(nodePath.join(nadia, 'game', 'scripts', 'chapter_1.rpy'),
+        'label start:' + L + '    "Hello there."' + L)
+      await commit(nadia, { message: 'Reword', paths: ['game/scripts/chapter_1.rpy'], push: true })
+
+      const bobBefore = await readStatus(bob)
+      check('the other machine does not know yet', bobBefore.behind === 0, String(bobBefore.behind))
+      const pulled = await pull(bob)
+      check('pulling reports what arrived', pulled.ok && pulled.message.includes('Pulled 1'),
+        pulled.message)
+      const bobAfter = await fsp.readFile(
+        nodePath.join(bob, 'game', 'scripts', 'chapter_1.rpy'), 'utf8')
+      check('and the file is updated', bobAfter.includes('Hello there.'), bobAfter)
+      check('a second pull has nothing to do',
+        (await pull(bob)).message === 'Already up to date.', (await pull(bob)).message)
+
+      // Divergence is reported, never resolved behind the writer's back.
+      await fsp.writeFile(nodePath.join(nadia, 'game', 'scripts', 'chapter_1.rpy'),
+        'label start:' + L + '    "Nadia wrote this."' + L)
+      await commit(nadia, { message: 'Nadia', paths: ['game/scripts/chapter_1.rpy'], push: true })
+      await fsp.writeFile(nodePath.join(bob, 'game', 'scripts', 'chapter_1.rpy'),
+        'label start:' + L + '    "Bob wrote this."' + L)
+      await commit(bob, { message: 'Bob', paths: ['game/scripts/chapter_1.rpy'] })
+
+      const diverged = await pull(bob)
+      check('a divergence is refused, not merged silently', !diverged.ok, diverged.message)
+      check('and offers the disagreement rather than a git lecture',
+        (diverged.conflicts ?? []).length === 1, diverged.message)
+      check('and says nothing has been changed yet',
+        diverged.message.includes('Nothing has been changed yet'), diverged.message)
+      check('and counts in words that agree with the number',
+        diverged.message.includes('1 line was') && !diverged.message.includes('1 lines'),
+        diverged.message)
+      check('and git own terminal advice is not passed on',
+        !/hint:/i.test((diverged.detail ?? '')), String(diverged.detail))
+      check('and never mentions rebasing at anybody',
+        !/rebase|fast-forward/i.test(diverged.message + (diverged.detail ?? '')),
+        diverged.message + ' | ' + (diverged.detail ?? ''))
+      const stillBob = await fsp.readFile(
+        nodePath.join(bob, 'game', 'scripts', 'chapter_1.rpy'), 'utf8')
+      check('the refused pull changed nothing on disk',
+        stillBob.includes('Bob wrote this.'), stillBob)
+
+      // Unsaved work in the way used to be refused, and refused with the
+      // wrong reason. It is now handled instead, so what is checked here is
+      // that it is not mistaken for divergence and that the work survives.
+      const carl = nodePath.join(base, 'carl')
+      await git(base, ['clone', '--quiet', remote, carl])
+      await identify(carl, 'carl')
+      const L4 = String.fromCharCode(10)
+      await fsp.writeFile(nodePath.join(nadia, 'game', 'scripts', 'chapter_1.rpy'),
+        'label start:' + L4 + '    "Nadia again."' + L4)
+      await commit(nadia, { message: 'ahead', paths: ['game/scripts/chapter_1.rpy'], push: true })
+      // Carl has an unsaved edit to the very file that is about to arrive.
+      await fsp.writeFile(nodePath.join(carl, 'game', 'scripts', 'chapter_1.rpy'),
+        'label start:' + L4 + '    "Carl was here."' + L4)
+
+      const blocked = await pull(carl)
+      check('the same line changed twice is a decision, not an error', !blocked.ok,
+        blocked.message)
+      check('and is never blamed on divergence',
+        !blocked.message.includes('different starting point'), blocked.message)
+      check('and promises what it delivered: nothing changed',
+        blocked.message.includes('Nothing has been changed yet'), blocked.message)
+      const carlKept = await fsp.readFile(
+        nodePath.join(carl, 'game', 'scripts', 'chapter_1.rpy'), 'utf8')
+      check('and the unsaved work is still there', carlKept.includes('Carl was here.'), carlKept)
+
+      // Guards.
+      const noMessage = await commit(bob, { message: '   ', paths: ['game/scripts/chapter_1.rpy'] })
+      check('a commit without a message is refused',
+        !noMessage.ok && noMessage.message.includes('needs a message'), noMessage.message)
+      const nothing = await commit(bob, { message: 'x', paths: [] })
+      check('a commit with nothing selected is refused',
+        !nothing.ok && nothing.message.includes('Nothing selected'), nothing.message)
+
+      const nameless = nodePath.join(base, 'nameless')
+      await git(base, ['clone', '--quiet', remote, nameless])
+      await git(nameless, ['config', '--unset', 'user.name'])
+      await git(nameless, ['config', '--unset', 'user.email'])
+      await fsp.writeFile(nodePath.join(nameless, 'new.txt'), 'x')
+      const anon = await commit(nameless, { message: 'x', paths: ['new.txt'] })
+      check('a missing git identity is explained rather than thrown',
+        !anon.ok && anon.message.includes('does not know who you are'), anon.message)
+
+      // One checkout, two people: a commit says who actually made it.
+      const L3 = String.fromCharCode(10)
+      await fsp.writeFile(nodePath.join(nadia, 'game', 'scripts', 'shared.rpy'), 'label s:' + L3)
+      const attributed = await commit(nadia, {
+        message: 'On behalf of somebody else',
+        paths: ['game/scripts/shared.rpy'],
+        author: { name: 'pat', email: 'pat@example.com' }
+      })
+      check('a commit can be made on behalf of a person', attributed.ok,
+        attributed.message + ' ' + (attributed.detail ?? ''))
+
+      const author = await new Promise<string>((resolve) => {
+        const child = spawn('git', ['log', '-1', '--format=%an <%ae>'], {
+          cwd: nadia, stdio: ['ignore', 'pipe', 'ignore']
+        })
+        let out = ''
+        child.stdout.on('data', (d) => (out += String(d)))
+        child.on('close', () => resolve(out.trim()))
+        child.on('error', () => resolve(''))
+      })
+      check('history records that person, not the checkout',
+        author === 'pat <pat@example.com>', author)
+
+      const committer = await new Promise<string>((resolve) => {
+        const child = spawn('git', ['log', '-1', '--format=%cn'], {
+          cwd: nadia, stdio: ['ignore', 'pipe', 'ignore']
+        })
+        let out = ''
+        child.stdout.on('data', (d) => (out += String(d)))
+        child.on('close', () => resolve(out.trim()))
+        child.on('error', () => resolve(''))
+      })
+      check('and the machine that did it is still recorded as the committer',
+        committer === 'pat', committer)
+
+      // Without an author, a checkout with no identity still refuses.
+      const anonymous2 = nodePath.join(base, 'anon2')
+      await git(base, ['clone', '--quiet', remote, anonymous2])
+      await git(anonymous2, ['config', '--unset', 'user.name'])
+      await git(anonymous2, ['config', '--unset', 'user.email'])
+      await fsp.writeFile(nodePath.join(anonymous2, 'x.txt'), 'x')
+      const named = await commit(anonymous2, {
+        message: 'named',
+        paths: ['x.txt'],
+        author: { name: 'sam', email: 'sam@example.com' }
+      })
+      check('an author lets a checkout with no identity commit anyway', named.ok,
+        named.message + ' ' + (named.detail ?? ''))
+
+      // A message full of quotes and newlines is text, not syntax.
+      await fsp.writeFile(nodePath.join(nadia, 'game', 'scripts', 'chapter_2.rpy'), 'label two:' + L)
+      const awkward = await commit(nadia, {
+        message: 'He said "run!" & then;' + L + L + 'a second paragraph with $VAR and `ticks`',
+        paths: ['game/scripts/chapter_2.rpy']
+      })
+      check('an awkward commit message is handled as text', awkward.ok,
+        awkward.message + ' ' + (awkward.detail ?? ''))
+
+      const notRepo = await readStatus(base)
+      check('a folder that is not a repository says so',
+        !notRepo.isRepo && (notRepo.error ?? '').includes('not a git repository'),
+        String(notRepo.error))
+
+      await fsp.rm(base, { recursive: true, force: true })
+    }
+  }
+
+  console.log('\n[git sync: both sides moved on]')
+  {
+    // Saving in the web app commits and pushes; saving at a desk commits. Do
+    // both before either reaches the other and the two histories have moved
+    // apart -- which is not an exotic case, it is Tuesday.
+    const os = await import('node:os')
+    const fsp = (await import('node:fs')).promises
+    const nodePath = await import('node:path')
+    const { spawn } = await import('node:child_process')
+    const L = String.fromCharCode(10)
+
+    const git = (cwd: string, args: string[]) =>
+      new Promise<{ code: number; out: string }>((resolve) => {
+        const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+        let out = ''
+        child.stdout.on('data', (d) => (out += String(d)))
+        child.stderr.on('data', (d) => (out += String(d)))
+        child.on('error', () => resolve({ code: -1, out }))
+        child.on('close', (code) => resolve({ code: code ?? -1, out }))
+      })
+
+    const base = nodePath.join(os.tmpdir(), 'rpw-both-' + Date.now())
+    const remote = nodePath.join(base, 'remote.git')
+    await fsp.mkdir(base, { recursive: true })
+
+    if ((await git(base, ['--version'])).code === 0) {
+      await git(base, ['init', '--bare', '--initial-branch=main', remote])
+      const clone = async (who: string): Promise<string> => {
+        const dir = nodePath.join(base, who)
+        await git(base, ['clone', '--quiet', remote, dir])
+        await git(dir, ['config', 'user.name', who])
+        await git(dir, ['config', 'user.email', who + '@example.com'])
+        return dir
+      }
+      const at = (dir: string) => nodePath.join(dir, 'game', 'scripts', 'ch1.rpy')
+      const read = (dir: string) => fsp.readFile(at(dir), 'utf8')
+      const stashes = async (dir: string): Promise<number> => {
+        const listed = await git(dir, ['stash', 'list'])
+        return listed.out.trim() === '' ? 0 : listed.out.trim().split(L).length
+      }
+
+      const lines = [
+        'label ch1:',
+        '    scene bg_room',
+        '    show omar concerned at left',
+        '    omar "First line."',
+        '    nadia "Second line."',
+        '    omar "Third line."',
+        ''
+      ]
+      const desk = await clone('desk')
+      await fsp.mkdir(nodePath.join(desk, 'game', 'scripts'), { recursive: true })
+      await fsp.writeFile(at(desk), lines.join(L))
+      await commit(desk, { message: 'The scene', paths: ['game/scripts/ch1.rpy'], push: true })
+      const phone = await clone('phone')
+
+      // The phone saves and sends, as it does on every save.
+      await fsp.writeFile(at(phone), (await read(phone)).replace('First line.', 'First line, reworded.'))
+      await commit(phone, { message: 'From the phone', paths: ['game/scripts/ch1.rpy'], push: true })
+
+      // The desk saves too, without sending: a different line of the same file.
+      await fsp.writeFile(at(desk), (await read(desk)).replace('Third line.', 'Third line, reworded.'))
+      await commit(desk, { message: 'From the desk', paths: ['game/scripts/ch1.rpy'] })
+
+      const both = await readStatus(desk)
+      check('both sides have moved on', both.ahead === 1 && both.behind === 0,
+        both.ahead + '/' + both.behind)
+
+      const joined = await pull(desk)
+      const afterJoin = await read(desk)
+      check('the two are put together without asking', joined.ok,
+        joined.message + ' ' + (joined.detail ?? ''))
+      check('and it says what happened in those terms',
+        joined.message.includes('on top'), joined.message)
+      check('the work from the phone is here', afterJoin.includes('First line, reworded.'),
+        afterJoin)
+      check('and the work from the desk survived', afterJoin.includes('Third line, reworded.'),
+        afterJoin)
+      check('no merge markers were written', !afterJoin.includes('<' + '<<<<<<'), afterJoin)
+      check('nothing was left set aside', (await stashes(desk)) === 0,
+        String(await stashes(desk)))
+
+      const ready = await readStatus(desk)
+      check('the desk is now only ahead, so it can send',
+        ready.ahead === 1 && ready.behind === 0, ready.ahead + '/' + ready.behind)
+      const sent = await push(desk)
+      check('and sending works straight away', sent.ok, sent.message)
+
+      // History stays a straight line: no merge commit for a writer to wonder at.
+      const shape = await git(desk, ['log', '--oneline', '--merges'])
+      check('no merge commit was invented', shape.out.trim() === '', shape.out)
+
+      // Unsaved work on top of all that must also survive the replay.
+      await git(phone, ['pull', '--quiet', '--ff-only'])
+      await fsp.writeFile(at(phone), (await read(phone)).replace('Second line.', 'Second line, from the phone.'))
+      await commit(phone, { message: 'Phone again', paths: ['game/scripts/ch1.rpy'], push: true })
+
+      await fsp.writeFile(at(desk), (await read(desk)).replace('scene bg_room', 'scene bg_room_night'))
+      await commit(desk, { message: 'Desk again', paths: ['game/scripts/ch1.rpy'] })
+      await fsp.writeFile(at(desk), (await read(desk)).replace('at left', 'at center'))
+
+      const withUnsaved = await pull(desk)
+      const afterAll = await read(desk)
+      check('a replay with unsaved work on top succeeds', withUnsaved.ok,
+        withUnsaved.message + ' ' + (withUnsaved.detail ?? ''))
+      check('the saved work of both sides is there',
+        afterAll.includes('Second line, from the phone.') && afterAll.includes('bg_room_night'),
+        afterAll)
+      check('and the unsaved edit is still unsaved', afterAll.includes('at center'), afterAll)
+      check('with nothing left set aside', (await stashes(desk)) === 0,
+        String(await stashes(desk)))
+
+      // ---------------------------------------------------------------
+      // Both sides saved, and both changed the same line. Answering the
+      // question has to finish the job: resolving and then being asked the
+      // very same question again is the shape of a loop with no way out.
+      await git(phone, ['pull', '--quiet', '--ff-only'])
+      await fsp.writeFile(at(phone),
+        (await read(phone)).replace('First line, reworded.', 'First line, theirs.'))
+      await commit(phone, { message: 'Phone rewords', paths: ['game/scripts/ch1.rpy'], push: true })
+
+      await fsp.writeFile(at(desk),
+        (await read(desk)).replace('First line, reworded.', 'First line, mine.'))
+      await commit(desk, { message: 'Desk rewords', paths: ['game/scripts/ch1.rpy'] })
+
+      const facing = await readStatus(desk)
+      await pull(desk)
+      const standoff = await pull(desk)
+      check('with both sides saved, the same line is a question',
+        (standoff.conflicts ?? []).length === 1, standoff.message)
+      check('and this machine really does have work of its own',
+        facing.ahead > 0, String(facing.ahead))
+
+      const decided = await resolvePull(desk, [
+        { file: 'game/scripts/ch1.rpy', index: 0, take: 'mine' }
+      ])
+      check('answering it while ahead actually finishes', decided.ok,
+        decided.message + ' ' + (decided.detail ?? ''))
+
+      const afterDecided = await readStatus(desk)
+      check('and asking again has nothing left to ask',
+        afterDecided.behind === 0, String(afterDecided.behind))
+      const asAgain = await pull(desk)
+      check('a second attempt says it is up to date, not the same question again',
+        asAgain.ok && !asAgain.conflicts, asAgain.message)
+
+      const decidedText = await read(desk)
+      check('the chosen wording is in the file', decidedText.includes('First line, mine.'),
+        decidedText)
+      check('and the other is not', !decidedText.includes('First line, theirs.'), decidedText)
+      check('no markers reached the script', !decidedText.includes('<' + '<<<<<<'), decidedText)
+      check('and nothing was left set aside', (await stashes(desk)) === 0,
+        String(await stashes(desk)))
+      const canSend = await push(desk)
+      check('and the result can be sent', canSend.ok, canSend.message)
+
+      await fsp.rm(base, { recursive: true, force: true })
+    }
+  }
+
+  console.log('\n[git sync: bringing in changes over unsaved work]')
+  {
+    // The situation a writer actually hits: something arrived, and there are
+    // edits here that were never saved. The old answer was a git error and a
+    // trip to a terminal. These check the tool does the work instead -- and,
+    // more importantly, that every way it can fail leaves the unsaved work
+    // exactly where it was.
+    const os = await import('node:os')
+    const fsp = (await import('node:fs')).promises
+    const nodePath = await import('node:path')
+    const { spawn } = await import('node:child_process')
+    const L = String.fromCharCode(10)
+
+    const git = (cwd: string, args: string[]) =>
+      new Promise<{ code: number; out: string }>((resolve) => {
+        const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+        let out = ''
+        child.stdout.on('data', (d) => (out += String(d)))
+        child.stderr.on('data', (d) => (out += String(d)))
+        child.on('error', () => resolve({ code: -1, out }))
+        child.on('close', (code) => resolve({ code: code ?? -1, out }))
+      })
+
+    const base = nodePath.join(os.tmpdir(), 'rpw-aside-' + Date.now())
+    const remote = nodePath.join(base, 'remote.git')
+    await fsp.mkdir(base, { recursive: true })
+
+    if ((await git(base, ['--version'])).code === 0) {
+      await git(base, ['init', '--bare', '--initial-branch=main', remote])
+
+      const clone = async (who: string): Promise<string> => {
+        const dir = nodePath.join(base, who)
+        await git(base, ['clone', '--quiet', remote, dir])
+        await git(dir, ['config', 'user.name', who])
+        await git(dir, ['config', 'user.email', who + '@example.com'])
+        return dir
+      }
+      const scriptAt = (dir: string) => nodePath.join(dir, 'game', 'scripts', 'ch1.rpy')
+      const read = (dir: string) => fsp.readFile(scriptAt(dir), 'utf8')
+      const stashes = async (dir: string): Promise<number> => {
+        const listed = await git(dir, ['stash', 'list'])
+        return listed.out.trim() === '' ? 0 : listed.out.trim().split(L).length
+      }
+
+      // A scene with room to change different parts of it.
+      const lines = [
+        'label ch1:',
+        '    scene bg_room',
+        '    show omar concerned at left',
+        '    omar "He can\'t handle anything..."',
+        '    nadia "Should I go check on him?"',
+        '    omar "He\'s a big boy, Sparrow."',
+        ''
+      ]
+      const mine = await clone('mine')
+      await fsp.mkdir(nodePath.join(mine, 'game', 'scripts'), { recursive: true })
+      await fsp.writeFile(scriptAt(mine), lines.join(L))
+      await commit(mine, { message: 'The scene', paths: ['game/scripts/ch1.rpy'], push: true })
+
+      const theirs = await clone('theirs')
+
+      // ---------------------------------------------------------------
+      // They changed the staging; here, an unsaved edit to a different line
+      // of the same file. Both should survive, with nobody asked anything.
+      const staged = [...lines]
+      staged[2] = '    show omar concerned at center'
+      await fsp.writeFile(scriptAt(theirs), staged.join(L))
+      await commit(theirs, { message: 'Move Omar to centre', paths: ['game/scripts/ch1.rpy'], push: true })
+
+      const myEdit = [...lines]
+      myEdit[4] = '    nadia "Shouldn\'t I go check on him?"'
+      await fsp.writeFile(scriptAt(mine), myEdit.join(L))
+
+      const merged = await pull(mine)
+      const afterMerge = await read(mine)
+      check('unsaved work no longer blocks bringing changes in', merged.ok,
+        merged.message + ' ' + (merged.detail ?? ''))
+      check('and says the edits were put back',
+        merged.message.includes('back where they were'), merged.message)
+      check('their staging change arrived',
+        afterMerge.includes('at center'), afterMerge)
+      check('and the unsaved line is still unsaved, not lost',
+        afterMerge.includes("Shouldn't I go check"), afterMerge)
+      check('nothing was left set aside', (await stashes(mine)) === 0,
+        String(await stashes(mine)))
+      check('and it still counts as unsaved work',
+        (await readStatus(mine)).changes.length === 1,
+        JSON.stringify((await readStatus(mine)).changes))
+
+      // ---------------------------------------------------------------
+      // The same line changed on both sides: a real disagreement. Nothing may
+      // be half-applied, and no conflict markers may reach the .rpy file.
+      const settled = await commit(mine, {
+        message: 'Save the question',
+        paths: ['game/scripts/ch1.rpy'],
+        push: true
+      })
+      check('the merged scene can be saved and sent', settled.ok, settled.message)
+
+      await git(theirs, ['pull', '--quiet', '--ff-only'])
+      const theirLine = (await read(theirs)).replace(
+        "He's a big boy, Sparrow.",
+        "He's a grown man, Sparrow."
+      )
+      await fsp.writeFile(scriptAt(theirs), theirLine)
+      await commit(theirs, { message: 'Reword Omar', paths: ['game/scripts/ch1.rpy'], push: true })
+
+      const before = (await read(mine)).replace(
+        "He's a big boy, Sparrow.",
+        "He's old enough, Sparrow."
+      )
+      await fsp.writeFile(scriptAt(mine), before)
+      const headBefore = (await git(mine, ['rev-parse', 'HEAD'])).out.trim()
+
+      const clashed = await pull(mine)
+      const afterClash = await read(mine)
+      check('a real disagreement is reported, not merged', !clashed.ok, clashed.message)
+      check('and says nothing was changed',
+        clashed.message.includes('Nothing has been changed yet'), clashed.message)
+      check('and names the file it happened in',
+        clashed.message.includes('ch1.rpy'), clashed.message)
+      check('the unsaved wording is untouched',
+        afterClash.includes('old enough, Sparrow'), afterClash)
+      check('their wording did not sneak in',
+        !afterClash.includes('grown man'), afterClash)
+      // The one that matters most: a .rpy holding these is a broken game.
+      check('no conflict markers were written into the script',
+        !afterClash.includes('<' + '<<<<<<') && !afterClash.includes('>' + '>>>>>>'),
+        afterClash)
+      check('the branch is back where it started',
+        (await git(mine, ['rev-parse', 'HEAD'])).out.trim() === headBefore,
+        'HEAD moved')
+      check('and nothing was left set aside', (await stashes(mine)) === 0,
+        String(await stashes(mine)))
+      check('the working copy has no half-merged state',
+        (await readStatus(mine)).conflicted.length === 0,
+        JSON.stringify((await readStatus(mine)).conflicted))
+
+      // ---------------------------------------------------------------
+      // Trying again must still work: the failure left nothing behind.
+      const retry = await pull(mine)
+      check('the same disagreement is reported again, not something new',
+        !retry.ok && retry.message.includes('Nothing has been changed yet'), retry.message)
+      check('and the edits survived a second attempt',
+        (await read(mine)).includes('old enough, Sparrow'), await read(mine))
+
+      // ---------------------------------------------------------------
+      // The disagreement arrives as a question, in terms the editor can show.
+      check('the clash comes back as something to answer',
+        (clashed.conflicts ?? []).length === 1, JSON.stringify(clashed.conflicts?.length))
+      const file = clashed.conflicts![0]
+      check('named against the file it is in', file.file === 'game/scripts/ch1.rpy', file.file)
+      check('with one line to settle', file.regions.length === 1,
+        String(file.regions.length))
+
+      const region = file.regions[0]
+      check('and both readings of it', region.mine.lines.length === 1 &&
+        region.theirs.lines.length === 1,
+        JSON.stringify([region.mine.lines, region.theirs.lines]))
+      check('mine is the wording that was never saved',
+        region.mine.lines[0].includes('old enough'), JSON.stringify(region.mine.lines))
+      check('theirs is what arrived',
+        region.theirs.lines[0].includes('grown man'), JSON.stringify(region.theirs.lines))
+      check('and what both started from is kept too',
+        region.base.lines[0].includes('big boy'), JSON.stringify(region.base.lines))
+
+      // Parsed, so the panel can show a speaker rather than syntax.
+      const spoken = region.mine.nodes[0]
+      check('the line is understood as dialogue', spoken.kind === 'dialogue', spoken.kind)
+      check('and knows who says it',
+        spoken.kind === 'dialogue' && spoken.speaker === 'omar',
+        JSON.stringify(spoken))
+
+      // A half-answered set must not move the branch.
+      const headBeforeResolve = (await git(mine, ['rev-parse', 'HEAD'])).out.trim()
+      const partial = await resolvePull(mine, [])
+      check('deciding nothing is refused', !partial.ok, partial.message)
+      check('and the branch has not moved',
+        (await git(mine, ['rev-parse', 'HEAD'])).out.trim() === headBeforeResolve, 'HEAD moved')
+
+      // Answering it: keep my wording, take everything else.
+      const resolved = await resolvePull(mine, [
+        { file: 'game/scripts/ch1.rpy', index: 0, take: 'mine' }
+      ])
+      const afterResolve = await read(mine)
+      check('answering brings the changes in', resolved.ok,
+        resolved.message + ' ' + (resolved.detail ?? ''))
+      check('and says what was kept', resolved.message.includes('kept 1'), resolved.message)
+      check('the chosen wording is what the file says',
+        afterResolve.includes('old enough, Sparrow'), afterResolve)
+      check('the wording not chosen is gone',
+        !afterResolve.includes('grown man'), afterResolve)
+      check('no markers were written', !afterResolve.includes('<' + '<<<<<<'), afterResolve)
+      check('the branch moved on to what arrived',
+        (await readStatus(mine)).behind === 0, String((await readStatus(mine)).behind))
+      check('and nothing was left set aside', (await stashes(mine)) === 0,
+        String(await stashes(mine)))
+      check('the kept line still counts as unsaved work',
+        (await readStatus(mine)).changes.some((c) => c.path === 'game/scripts/ch1.rpy'),
+        JSON.stringify((await readStatus(mine)).changes))
+
+      // ---------------------------------------------------------------
+      // Writing a third version, which is what two rewordings usually want.
+      await commit(mine, { message: 'Settle the line', paths: ['game/scripts/ch1.rpy'], push: true })
+      await git(theirs, ['pull', '--quiet', '--ff-only'])
+      await fsp.writeFile(scriptAt(theirs),
+        (await read(theirs)).replace('old enough, Sparrow', 'more than old enough, Sparrow'))
+      await commit(theirs, { message: 'Reword again', paths: ['game/scripts/ch1.rpy'], push: true })
+      await fsp.writeFile(scriptAt(mine),
+        (await read(mine)).replace('old enough, Sparrow', 'quite old enough, Sparrow'))
+
+      const second = await pull(mine)
+      check('a second disagreement is offered the same way',
+        (second.conflicts ?? []).length === 1, second.message)
+      const own = await resolvePull(mine, [{
+        file: 'game/scripts/ch1.rpy',
+        index: 0,
+        take: 'custom',
+        text: '    omar "He is old enough, Sparrow."'
+      }])
+      const afterOwn = await read(mine)
+      check('a line written on the spot is accepted', own.ok, own.message)
+      check('and is what ends up in the script',
+        afterOwn.includes('He is old enough, Sparrow.'), afterOwn)
+      check('with neither of the two it replaced',
+        !afterOwn.includes('quite old enough') && !afterOwn.includes('more than old enough'),
+        afterOwn)
+      check('and the file still parses as a script',
+        parseDocument(afterOwn).nodes.some(
+          (n) => n.kind === 'dialogue' && n.text.includes('He is old enough')),
+        'no dialogue node')
+
+
+      await fsp.rm(base, { recursive: true, force: true })
+    }
+  }
+
+  console.log('\n[git sync: refused pushes]')
+  {
+    // A remote that will not take changes onto its main branch, which is the
+    // whole point of giving a proofreader an account at all. The refusal is a
+    // real pre-receive hook rather than a string this test made up, so what is
+    // matched on is what git actually prints.
+    const os = await import('node:os')
+    const fsp = (await import('node:fs')).promises
+    const nodePath = await import('node:path')
+    const { spawn } = await import('node:child_process')
+    const L = String.fromCharCode(10)
+
+    const git = (cwd: string, args: string[]) =>
+      new Promise<{ code: number; out: string }>((resolve) => {
+        const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+        let out = ''
+        child.stdout.on('data', (d) => (out += String(d)))
+        child.stderr.on('data', (d) => (out += String(d)))
+        child.on('error', () => resolve({ code: -1, out }))
+        child.on('close', (code) => resolve({ code: code ?? -1, out }))
+      })
+
+    const base = nodePath.join(os.tmpdir(), 'rpw-guard-' + Date.now())
+    const remote = nodePath.join(base, 'guarded.git')
+    await fsp.mkdir(base, { recursive: true })
+
+    if ((await git(base, ['--version'])).code === 0) {
+      await git(base, ['init', '--bare', '--initial-branch=main', remote])
+
+      const clone = async (who: string): Promise<string> => {
+        const dir = nodePath.join(base, who)
+        await git(base, ['clone', '--quiet', remote, dir])
+        await git(dir, ['config', 'user.name', who])
+        await git(dir, ['config', 'user.email', who + '@example.com'])
+        return dir
+      }
+      const scene = async (dir: string, name: string): Promise<string> => {
+        await fsp.mkdir(nodePath.join(dir, 'game', 'scripts'), { recursive: true })
+        const rel = 'game/scripts/' + name + '.rpy'
+        await fsp.writeFile(nodePath.join(dir, rel), 'label ' + name + ':' + L)
+        return rel
+      }
+      const branches = async (): Promise<string> =>
+        (await git(base, ['ls-remote', '--heads', remote])).out
+
+      // Seed main while it is still open, then close it.
+      const seeder = await clone('seeder')
+      await commit(seeder, { message: 'The script', paths: [await scene(seeder, 'one')], push: true })
+
+      // Shaped like GitLab: main is closed, and any other branch is answered
+      // with a word about its merge request -- on every push, not only the one
+      // that carried push options, which is how a second round of edits finds
+      // the review that is already open.
+      const hookPath = nodePath.join(remote, 'hooks', 'pre-receive')
+      const writeHook = async (says: string): Promise<void> => {
+        await fsp.writeFile(hookPath,
+          '#!/bin/sh' + L +
+          'branch=""' + L +
+          'while read old new ref; do' + L +
+          '  case "$ref" in' + L +
+          '    refs/heads/main)' + L +
+          '      echo "GitLab: You are not allowed to push code to protected branches." >&2' + L +
+          '      exit 1;;' + L +
+          '    *) branch="$ref";;' + L +
+          '  esac' + L +
+          'done' + L +
+          'if [ -n "$branch" ]; then' + L +
+          says + L +
+          'fi' + L +
+          'exit 0' + L, { mode: 0o755 })
+      }
+      await writeHook('  :')
+
+      // The hook has to actually bite, or everything below tests nothing --
+      // and it needs something to bite on, so here is a commit to send.
+      await commit(seeder, { message: 'A second scene', paths: [await scene(seeder, 'two')] })
+      const guarded = await git(seeder, ['push', '--quiet'])
+      const hookWorks = guarded.code !== 0 && /hook declined|not allowed to push/i.test(guarded.out)
+      check('the test remote really does refuse pushes to its main branch', hookWorks,
+        guarded.out.slice(0, 200))
+
+      if (hookWorks) {
+        // ---------------------------------------------------------------
+        // A remote too old for push options: the work still goes up, but
+        // nothing was asked of anybody, and that is reported as a failure.
+        const dana = await clone('dana')
+        const plain = await commit(dana, {
+          message: 'Fixed a typo in the first scene',
+          paths: [await scene(dana, 'dana_fix')],
+          push: true
+        })
+        check('a refused push offers the work as a branch instead',
+          (await branches()).includes('refs/heads/proposal/dana-to-main'), await branches())
+        check('and the commit itself is still reported as saved',
+          plain.message.startsWith('Saved 1 file.'), plain.message)
+        check('a branch with no merge request is a failure, not a success', !plain.ok,
+          plain.message)
+        check('and says plainly that nobody was asked to look',
+          plain.message.includes('no merge request') &&
+          plain.message.includes('proposal/dana-to-main'), plain.message)
+        check('with no link offered when the remote printed none', plain.link === undefined,
+          JSON.stringify(plain.link))
+
+        // ---------------------------------------------------------------
+        // A remote that takes push options and opens the merge request.
+        await git(base, ['-C', remote, 'config', 'receive.advertisePushOptions', 'true'])
+        await writeHook(
+          '  echo "View merge request for the branch:" >&2' + L +
+          '  echo "  https://gitlab.example.com/tcfm/game/-/merge_requests/7" >&2')
+
+        const erin = await clone('erin')
+        const asked = await commit(erin, {
+          message: 'Reworded the confession',
+          paths: [await scene(erin, 'erin_fix')],
+          push: true
+        })
+        check('when the remote opens a merge request, that is a success', asked.ok, asked.message)
+        check('and the merge request is what is reported',
+          asked.message.includes('for review') &&
+          asked.message.includes('proposal/erin-to-main'), asked.message)
+        check('with a link straight to it',
+          asked.link?.exists === true &&
+          asked.link?.url === 'https://gitlab.example.com/tcfm/game/-/merge_requests/7',
+          JSON.stringify(asked.link))
+
+        // A second round of edits: the same review grows rather than a second
+        // one being opened beside it.
+        const more = await commit(erin, {
+          message: 'And fixed the line after it',
+          paths: [await scene(erin, 'erin_fix_2')],
+          push: true
+        })
+        check('more work joins the review already open', more.ok &&
+          more.message.includes('already up for review'), more.message)
+        check('and goes to the same branch, not a second one',
+          more.message.includes('proposal/erin-to-main') &&
+          (await branches()).split('proposal/erin-to-main').length === 2,
+          await branches())
+        check('pointing at the same merge request',
+          more.link?.url === 'https://gitlab.example.com/tcfm/game/-/merge_requests/7',
+          JSON.stringify(more.link))
+        check('and it really did arrive there',
+          (await git(base, ['ls-remote', remote, 'refs/heads/proposal/erin-to-main'])).out
+            .includes((await git(erin, ['rev-parse', 'HEAD'])).out.trim().slice(0, 12)),
+          'branch tip should match erin HEAD')
+
+        const waiting = await readStatus(erin)
+        check('work sitting in a review is still ahead of the branch it targets',
+          waiting.ahead === 2, String(waiting.ahead))
+        check('but is known to be up for review, without asking the remote',
+          waiting.awaitingReview === 'origin/proposal/erin-to-main',
+          String(waiting.awaitingReview))
+        // Offline is exactly when a wrong guess would hurt most. Pointing the
+        // remote at nothing proves the answer came off the disk: if this ever
+        // starts asking the server, this check fails.
+        await git(erin, ['remote', 'set-url', 'origin', nodePath.join(base, 'nowhere.git')])
+        const offline = await readStatus(erin)
+        await git(erin, ['remote', 'set-url', 'origin', remote])
+        check('and the answer needs no remote to give',
+          offline.awaitingReview === waiting.awaitingReview, String(offline.awaitingReview))
+
+        // Sending the same commits again must not claim a second submission.
+        const again = await push(erin)
+        check('sending the same work again says it is already waiting',
+          again.ok && again.message.includes('already waiting'), again.message)
+        check('and does not claim it was submitted a second time',
+          !again.message.includes('for review'), again.message)
+
+        // ---------------------------------------------------------------
+        // The trap this was built to avoid: a link to a page that WOULD open
+        // a merge request is not a merge request.
+        await writeHook(
+          '  echo "To create a merge request for the branch, visit:" >&2' + L +
+          '  echo "  https://gitlab.example.com/tcfm/game/-/merge_requests/new?x=1" >&2')
+
+        const frank = await clone('frank')
+        const offered = await commit(frank, {
+          message: 'Trimmed a line',
+          paths: [await scene(frank, 'frank_fix')],
+          push: true
+        })
+        check('an offer to create a merge request is not one being created', !offered.ok,
+          offered.message)
+        check('the branch went up all the same',
+          (await branches()).includes('refs/heads/proposal/frank-to-main'), await branches())
+        check('and the link is marked as one that would open it, not one that did',
+          offered.link?.exists === false &&
+          offered.link?.url.includes('merge_requests/new'), JSON.stringify(offered.link))
+
+        // ---------------------------------------------------------------
+        // Being out of date is not a refusal, and must not become a proposal.
+        await fsp.rename(hookPath, hookPath + '.off')
+        const gwen = await clone('gwen')
+        const helen = await clone('helen')
+        await commit(gwen, { message: 'Later work', paths: [await scene(gwen, 'gwen_fix')], push: true })
+        await fsp.rename(hookPath + '.off', hookPath)
+
+        await commit(helen, { message: 'Older work', paths: [await scene(helen, 'helen_fix')] })
+        const stale = await push(helen)
+        check('being behind the remote is answered with pull, not a merge request',
+          !stale.ok && stale.message.includes('Bring in changes first'), stale.message)
+        check('and no branch is opened for work that is simply out of date',
+          !(await branches()).includes('proposal/helen-to-main'), await branches())
+      }
+
+      await fsp.rm(base, { recursive: true, force: true })
+    }
+  }
+
+  console.log('\n[render sync: planning]')
+  {
+    const os = await import('node:os')
+    const fsp = (await import('node:fs')).promises
+    const nodePath = await import('node:path')
+
+    const root = nodePath.join(os.tmpdir(), 'rpw-renders-' + Date.now())
+    const source = nodePath.join(root, 'blender', 'Chapter 1', 'Renders')
+    const target = nodePath.join(root, 'game', 'images', 'ch1')
+    await fsp.mkdir(source, { recursive: true })
+    await fsp.mkdir(target, { recursive: true })
+    await fsp.mkdir(nodePath.join(source, 'old'), { recursive: true })
+    await fsp.mkdir(nodePath.join(source, 'Animations', 'walk_anim'), { recursive: true })
+
+    const write = async (file: string, bytes = 16) =>
+      fsp.writeFile(file, Buffer.alloc(bytes, 1))
+    const touchTime = async (file: string, ms: number) =>
+      fsp.utimes(file, new Date(ms), new Date(ms))
+
+    // Three stills: one brand new, one whose source moved on, one settled.
+    await write(nodePath.join(source, 'ch1_room_1.png'))
+    await write(nodePath.join(source, 'ch1_room_2.png'))
+    await write(nodePath.join(source, 'ch1_room_3.png'))
+    await write(nodePath.join(target, 'ch1_room_2.webp'), 8)
+    await write(nodePath.join(target, 'ch1_room_3.webp'), 8)
+
+    // Files the scan must not treat as renders.
+    await write(nodePath.join(source, 'notes.txt'))
+    await write(nodePath.join(source, 'scene.blend'))
+    await write(nodePath.join(source, 'old', 'ch1_room_9.png'))
+    await write(nodePath.join(source, 'Animations', 'walk_anim', '0001.png'))
+
+    const T = Date.parse('2026-01-01T12:00:00Z')
+    await touchTime(nodePath.join(target, 'ch1_room_2.webp'), T)
+    await touchTime(nodePath.join(source, 'ch1_room_2.png'), T + 60000)
+    await touchTime(nodePath.join(target, 'ch1_room_3.webp'), T + 60000)
+    await touchTime(nodePath.join(source, 'ch1_room_3.png'), T)
+
+    const config = { sourceDir: source, targetSubdir: 'ch1' }
+    const plan = await planRenderSync(root, config)
+
+    const byName = new Map(plan.items.map((i) => [i.name, i]))
+    check('only images at the top level are planned', plan.items.length === 3,
+      JSON.stringify(plan.items.map((i) => i.name)))
+    check('sub-folders are named rather than silently dropped',
+      plan.ignoredDirs.sort().join(',') === 'Animations,old', JSON.stringify(plan.ignoredDirs))
+    check('non-images are counted, not listed', plan.ignoredFiles === 2, String(plan.ignoredFiles))
+    check('a still with no output is new', byName.get('ch1_room_1.png')?.status === 'new')
+    check('a still whose source moved on is stale',
+      byName.get('ch1_room_2.png')?.status === 'stale')
+    check('a still older than its output is current',
+      byName.get('ch1_room_3.png')?.status === 'current')
+    check('the output name swaps the extension',
+      byName.get('ch1_room_1.png')?.outputName === 'ch1_room_1.webp',
+      String(byName.get('ch1_room_1.png')?.outputName))
+    check('the target folder sits under game/images',
+      plan.targetDir === target, plan.targetDir + ' vs ' + target)
+    check('sizes and times come back for the report',
+      (byName.get('ch1_room_2.png')?.targetBytes ?? 0) === 8 &&
+      (byName.get('ch1_room_2.png')?.sourceModified ?? 0) === T + 60000,
+      JSON.stringify(byName.get('ch1_room_2.png')))
+
+    // Equal timestamps must not count as stale, or every scan rebuilds the lot.
+    await touchTime(nodePath.join(source, 'ch1_room_1.png'), T)
+    await write(nodePath.join(target, 'ch1_room_1.webp'), 8)
+    await touchTime(nodePath.join(target, 'ch1_room_1.webp'), T)
+    const equal = await planRenderSync(root, config)
+    check('an output written at the same moment is current',
+      equal.items.find((i) => i.name === 'ch1_room_1.png')?.status === 'current',
+      String(equal.items.find((i) => i.name === 'ch1_room_1.png')?.status))
+
+    // Ordering is what a person expects, not ASCII.
+    await write(nodePath.join(source, 'ch1_room_10.png'))
+    const ordered = await planRenderSync(root, config)
+    const names = ordered.items.map((i) => i.name)
+    check('stills are listed in human order',
+      names.indexOf('ch1_room_2.png') > names.indexOf('ch1_room_10.png') === false &&
+      names.indexOf('ch1_room_10.png') > names.indexOf('ch1_room_1.png'),
+      JSON.stringify(names))
+
+    // Sub-folders, off by default and on when asked for.
+    await write(nodePath.join(source, 'old', 'ch1_room_9.png'))
+    await fsp.mkdir(nodePath.join(source, 'scene_a'), { recursive: true })
+    await fsp.mkdir(nodePath.join(source, 'scene_b'), { recursive: true })
+    await fsp.mkdir(nodePath.join(source, '.cache'), { recursive: true })
+    await write(nodePath.join(source, 'scene_a', 'shot_01.png'))
+    await write(nodePath.join(source, 'scene_b', 'shot_01.png'))
+    await write(nodePath.join(source, '.cache', 'junk.png'))
+
+    const flat = await planRenderSync(root, config)
+    check('sub-folders stay out unless asked for',
+      !flat.items.some((i) => i.name.includes('/')),
+      JSON.stringify(flat.items.map((i) => i.name)))
+
+    const deep = await planRenderSync(root, { ...config, includeSubfolders: true })
+    const deepNames = deep.items.map((i) => i.name)
+    check('turning it on brings the sub-folders in',
+      deepNames.includes('scene_a/shot_01.png') &&
+      deepNames.includes('scene_b/shot_01.png') &&
+      deepNames.includes('old/ch1_room_9.png'),
+      JSON.stringify(deepNames))
+    check('the top level is still there too',
+      deepNames.includes('ch1_room_1.png'), JSON.stringify(deepNames))
+    check('nothing is reported as ignored any more', deep.ignoredDirs.length === 0,
+      JSON.stringify(deep.ignoredDirs))
+    check('dot-folders are skipped even so',
+      !deepNames.some((n) => n.startsWith('.cache')), JSON.stringify(deepNames))
+
+    const shots = deep.items.filter((i) => i.name.endsWith('shot_01.png'))
+    check('two shots of the same name do not collide',
+      shots.length === 2 && new Set(shots.map((i) => i.outputName)).size === 2,
+      JSON.stringify(shots.map((i) => i.outputName)))
+    check('the sub-folder is kept in the output path',
+      shots.every((i) => i.outputName === i.name.replace('.png', '.webp')),
+      JSON.stringify(shots.map((i) => i.name + ' -> ' + i.outputName)))
+
+    // Staleness has to work through a sub-folder as well.
+    await fsp.mkdir(nodePath.join(target, 'scene_a'), { recursive: true })
+    await write(nodePath.join(target, 'scene_a', 'shot_01.webp'), 8)
+    await touchTime(nodePath.join(target, 'scene_a', 'shot_01.webp'), T)
+    await touchTime(nodePath.join(source, 'scene_a', 'shot_01.png'), T)
+    const nested = await planRenderSync(root, { ...config, includeSubfolders: true })
+    check('a nested output is matched to its nested source',
+      nested.items.find((i) => i.name === 'scene_a/shot_01.png')?.status === 'current' &&
+      nested.items.find((i) => i.name === 'scene_b/shot_01.png')?.status === 'new',
+      JSON.stringify(nested.items.filter((i) => i.name.includes('/')).map((i) => i.name + ':' + i.status)))
+
+    const missing = await planRenderSync(root, { sourceDir: source + '-gone', targetSubdir: 'ch1' })
+    check('a missing render folder is reported, not thrown',
+      (missing.error ?? '').includes('does not exist'), String(missing.error))
+    check('a missing folder plans nothing', missing.items.length === 0)
+
+    const unset = await planRenderSync(root, { sourceDir: '', targetSubdir: '' })
+    check('an unconfigured episode says so', (unset.error ?? '').includes('No render folder'),
+      String(unset.error))
+
+    check('an empty sub-folder writes straight to images',
+      targetDirFor(root, { sourceDir: source, targetSubdir: '' }) ===
+        nodePath.join(root, 'game', 'images'),
+      targetDirFor(root, { sourceDir: source, targetSubdir: '' }))
+    check('a sub-folder with slashes is still contained',
+      targetDirFor(root, { sourceDir: source, targetSubdir: '/ch1/' }) === target,
+      targetDirFor(root, { sourceDir: source, targetSubdir: '/ch1/' }))
+
+    check('quality defaults to the top of the lossy scale', clampQuality(undefined) === 100)
+    check('quality is clamped into range',
+      clampQuality(0) === 1 && clampQuality(500) === 100 && clampQuality(85) === 85)
+
+    // A missing encoder is reported per item rather than crashing the run.
+    const failed = await convertRender(
+      { encoder: 'ffmpeg', ffmpegPath: 'definitely-not-ffmpeg-xyz', quality: 100 },
+      nodePath.join(source, 'ch1_room_1.png'),
+      nodePath.join(target, 'ch1_room_1.webp')
+    )
+    check('a missing ffmpeg is reported as such',
+      !failed.ok && (failed.error ?? '').includes('ffmpeg was not found'), String(failed.error))
+
+    const unsafe = await convertRender(
+      { encoder: 'ffmpeg', ffmpegPath: 'ffmpeg && del *', quality: 100 },
+      nodePath.join(source, 'ch1_room_1.png'),
+      nodePath.join(target, 'x.webp')
+    )
+    check('an encoder path with shell syntax is refused',
+      !unsafe.ok && (unsafe.error ?? '').includes('not a valid command'), String(unsafe.error))
+
+    check('exactly 1 would switch Chromium to lossless, so it is held below',
+      canvasQuality(100) === 0.995 && canvasQuality(95) === 0.95,
+      canvasQuality(100) + ' / ' + canvasQuality(95))
+    check('a low quality maps straight through', canvasQuality(60) === 0.6,
+      String(canvasQuality(60)))
+
+    // TIFF was dropped from the accepted list: Chromium cannot decode it, and
+    // a format that fails on every file is worse than one that is not offered.
+    await write(nodePath.join(source, 'ch1_room_5.tiff'))
+    const noTiff = await planRenderSync(root, config)
+    check('a format Chromium cannot decode is not planned',
+      !noTiff.items.some((i) => i.name.endsWith('.tiff')),
+      JSON.stringify(noTiff.items.map((i) => i.name)))
+
+    await fsp.rm(root, { recursive: true, force: true })
+  }
+
+  console.log('\n[render sync: finding an encoder]')
+  {
+    check('a command that is not there does not answer',
+      (await probeFfmpeg('definitely-not-ffmpeg-xyz')) === null)
+    check('a command with shell syntax is never run',
+      (await probeFfmpeg('ffmpeg && del *')) === null)
+
+    // Whatever this machine has, the shape of the answer must be usable.
+    const status = await findFfmpeg('definitely-not-ffmpeg-xyz')
+    check('a configured command that fails is reported against that command',
+      status.ok === false && (status.error ?? '').includes('definitely-not-ffmpeg-xyz'),
+      String(status.error))
+    check('candidates carry a command, a version and a label',
+      status.candidates.every((c) => c.command && c.version && c.label),
+      JSON.stringify(status.candidates))
+    check('the failing command is not offered back as a candidate',
+      !status.candidates.some((c) => c.command === 'definitely-not-ffmpeg-xyz'),
+      JSON.stringify(status.candidates.map((c) => c.command)))
+
+    const plain = await findFfmpeg('')
+    check('an unset command falls back to the plain name',
+      plain.ok ? plain.command === 'ffmpeg' : (plain.error ?? '').includes('ffmpeg was not found'),
+      JSON.stringify({ ok: plain.ok, command: plain.command, error: plain.error }))
+    if (plain.ok) {
+      check('a working encoder reports its version', (plain.version ?? '').length > 0,
+        String(plain.version))
+      check('a working encoder offers no alternatives', plain.candidates.length === 0)
+    }
+  }
+
+  console.log('\n[proofreading: choosing what to send]')
+  {
+    check('an English line is worth proofreading', needsProofreading('Answer me, and no bullshit.'))
+    check('a Czech line is left for the translator', !needsProofreading('Kde se fláká?'))
+    check('an unrecognised line is still sent', needsProofreading('Hmm... [player_name]?'))
+    check('proofreading and translating want opposite lines',
+      needsProofreading('Kde se fláká?') === !needsTranslation('Kde se fláká?'))
+
+    const prompt = buildProofreadPrompt(
+      [
+        { id: 1, text: 'i aint got nothin.', speaker: 'Omar', accent: 'Ghetto' },
+        { id: 2, text: 'Leave', speaker: null, isChoice: true }
+      ],
+      'English'
+    )
+    check('the proofread prompt names the language', prompt.includes('written in English'))
+    check('it forbids rewriting meaning', prompt.includes('Do not change what a line means'))
+    check('it protects dialect from correction',
+      prompt.includes('Do not neutralise a voice'), prompt.slice(0, 400))
+    check('it passes the accent through', prompt.includes('Omar: Ghetto'))
+    check('it says accents must survive', prompt.includes('must survive the pass'))
+    check('it leaves other languages alone',
+      prompt.includes('If a line is not in English, return it unchanged.'))
+    check('it asks for revisions', prompt.includes('{"revisions":[{"id":1,"text":"..."}]}'))
+    check('a choice is marked as one', prompt.includes('"speaker":"CHOICE"'))
+    check('it never asks for a translation', !prompt.toLowerCase().includes('translat'))
+
+    const revisions = parseResponse('{"revisions":[{"id":2,"text":"Leave."}]}')
+    check('a revisions reply parses', revisions.byId.get(2) === 'Leave.',
+      JSON.stringify([...revisions.byId]))
+    check('a translations reply still parses',
+      parseResponse('{"translations":[{"id":1,"text":"x"}]}').byId.get(1) === 'x')
+  }
+
+  console.log('\n[proofreading: applying results to a script]')
+  {
+    const L = String.fromCharCode(10)
+    const script = [
+      'label D17_TEST:',
+      '    # Omar is on the bed',
+      '    scene bg_kitchen',
+      '    omar "Kde se fláká?"',
+      '    nadia "Answer me. And no bullshit."',
+      '    omar serious "{i}Nejsem na to hrdej{/i}, ale uz me to sralo."',
+      '    "Narrator line, ktera je ceska."',
+      '    menu:',
+      '        "Odejit":',
+      '            jump SOMEWHERE',
+      '    return',
+      ''
+    ].join(L)
+
+    const cast = [
+      { varName: 'omar', name: 'Omar', expressions: [], portraits: {} },
+      { varName: 'nadia', name: 'Nadia', expressions: [], portraits: {} }
+    ]
+    const profiles = [{ id: 'p1', varNames: ['nadia'], name: 'Nadia', accent: 'Southerner' }]
+
+    let sent = ''
+    const fake = async (prompt) => {
+      sent = prompt
+      const ids = [...prompt.matchAll(/"id":(\d+)/g)].map((m) => Number(m[1]))
+      const texts = [...prompt.matchAll(/"text":("(?:[^"\\]|\\.)*")/g)].map((m) => JSON.parse(m[1]))
+      return {
+        ok: true,
+        output: JSON.stringify({
+          revisions: ids.map((id, i) => ({ id, text: 'OK<' + texts[i] + '>' }))
+        })
+      }
+    }
+
+    const result = await runPass(script,
+      { mode: 'proofread' as const, sourceLanguage: 'cs', targetLanguage: 'en', cast, profiles }, fake)
+
+    check('untranslated Czech lines are skipped', result.skipped === 3, String(result.skipped))
+    check('the Czech dialogue is untouched',
+      result.content.includes('omar "Kde se fláká?"') &&
+      result.content.includes('"Narrator line, ktera je ceska."'), result.content)
+    check('a Czech line with markup is untouched',
+      result.content.includes('{i}Nejsem na to hrdej{/i}, ale uz me to sralo.'), result.content)
+    check('the English line was corrected',
+      result.content.includes('nadia "OK<Answer me. And no bullshit.>"'), result.content)
+    check('a menu choice is proofread too',
+      result.content.includes('"OK<Odejit>":'), result.content)
+    check('the accent of the corrected speaker reached the prompt',
+      sent.includes('Nadia: Southerner'), sent.slice(0, 300))
+    check('code and comments are untouched',
+      result.content.includes('# Omar is on the bed') &&
+      result.content.includes('scene bg_kitchen') &&
+      result.content.includes('jump SOMEWHERE'))
+    check('changes carry before and after', result.changes.length === 2 &&
+      result.changes.every((c) => c.before && c.after && c.line > 0),
+      JSON.stringify(result.changes.map((c) => c.line)))
+    check('the corrected line number is right',
+      result.changes[0].line === 5, JSON.stringify(result.changes[0]))
+
+    // The two passes are mirror images over the same file.
+    const translated = await runPass(script,
+      { mode: 'translate' as const, sourceLanguage: 'cs', targetLanguage: 'en', cast, profiles },
+      async (prompt) => {
+        const ids = [...prompt.matchAll(/"id":(\d+)/g)].map((m) => Number(m[1]))
+        return { ok: true, output: JSON.stringify({ translations: ids.map((id) => ({ id, text: 'T' })) }) }
+      })
+    check('what one pass skips, the other works on',
+      translated.skipped + result.skipped === 4 &&
+      translated.changes.length + result.changes.length === 6,
+      translated.skipped + '/' + result.skipped + ' ' +
+      translated.changes.length + '/' + result.changes.length)
+
+    // A selection limits the pass.
+    const partial = await runPass(script,
+      { mode: 'proofread' as const, sourceLanguage: 'cs', targetLanguage: 'en', cast, profiles, lines: [5] }, fake)
+    check('a line restriction limits the proofread', partial.changes.length === 1 &&
+      partial.changes[0].line === 5, JSON.stringify(partial.changes.map((c) => c.line)))
+    check('the choice outside the selection is untouched',
+      partial.content.includes('"Odejit":'), partial.content)
+
+    // A line the proofreader hands back unchanged is not a change.
+    const unchanged = await runPass(script,
+      { mode: 'proofread' as const, sourceLanguage: 'cs', targetLanguage: 'en', cast, profiles },
+      async (prompt) => {
+        const ids = [...prompt.matchAll(/"id":(\d+)/g)].map((m) => Number(m[1]))
+        const texts = [...prompt.matchAll(/"text":("(?:[^"\\]|\\.)*")/g)].map((m) => JSON.parse(m[1]))
+        return { ok: true, output: JSON.stringify({ revisions: ids.map((id, i) => ({ id, text: texts[i] })) }) }
+      })
+    check('a clean script reports no changes', unchanged.changes.length === 0 &&
+      unchanged.content === script, String(unchanged.changes.length))
+
+    const failed = await runPass(script,
+      { mode: 'proofread' as const, sourceLanguage: 'cs', targetLanguage: 'en', cast, profiles },
+      async () => ({ ok: false, output: '', error: 'CLI not found' }))
+    check('a failed proofread reports the error', failed.error === 'CLI not found')
+    check('a failed proofread leaves the script alone', failed.content === script)
+  }
+
+  console.log('\n[translation: the CLI runner]')
+  {
+    const bad = await cliRunner('claude && rm -rf /')('hi')
+    check('a command with shell metacharacters is refused', !bad.ok &&
+      bad.error!.includes('not a valid command'), String(bad.error))
+    const path1 = await cliRunner('C:/tools/claude.cmd')
+    check('a plain path is accepted as a command', typeof path1 === 'function')
+    // A Windows path is the normal way to name the command on the platform the
+    // app is used on, so backslashes have to survive the guard.
+    const B = String.fromCharCode(92)
+    const windowsPath = await cliRunner('C:' + B + 'tools' + B + 'claude.cmd')('hi')
+    check('a Windows path is not mistaken for shell syntax',
+      !(windowsPath.error ?? '').includes('not a valid command'), String(windowsPath.error))
+    const sneaky = await cliRunner('claude' + B + ' && del x')('hi')
+    check('a backslash does not smuggle a second command past the guard',
+      (sneaky.error ?? '').includes('not a valid command'), String(sneaky.error))
+
+    const missing = await cliRunner('definitely-not-a-real-command-xyz')('hi')
+    check('a missing command is reported as not installed', !missing.ok &&
+      missing.error!.includes('Install it'), String(missing.error))
+  }
+
+  console.log(`\n${pass} passed, ${fail} failed`)
+  if (fail > 0) process.exitCode = 1
+}
+
+main().catch((e) => {
+  console.error(e)
+  process.exitCode = 1
+})
