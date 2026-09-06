@@ -2324,6 +2324,24 @@ label.check input {
   cursor: pointer;
   flex: none;
 }
+/* A column of ten cards each offering "+ Note" is ten invitations nobody
+   asked for, competing with the one thing on the card worth reading. The
+   offer appears on the card being looked at; a note that exists always
+   shows, because that is content rather than an offer. */
+/* Only where there is a pointer to hover with. On a touch screen there is
+   no hover state to reach, so a control hidden behind one is a control that
+   does not exist -- and the phone is exactly where somebody is jotting a
+   note about a scene. */
+@media (hover: hover) {
+  .pc-act.quiet {
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+  .plot-card:hover .pc-act.quiet,
+  .pc-act.quiet:focus-visible {
+    opacity: 1;
+  }
+}
 .pc-act:hover {
   color: var(--text);
   border-color: var(--text-dim);

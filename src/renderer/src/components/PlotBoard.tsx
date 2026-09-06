@@ -231,7 +231,7 @@ export default function PlotBoard() {
                           {!beat.label && <span className="pc-kind">not written</span>}
                           <span className="spacer" />
                           <button
-                            className="pc-act"
+                            className={'pc-act' + (beat.description ? '' : ' quiet')}
                             title={beat.description ? 'Edit the note' : 'Add a note'}
                             onClick={(e) => {
                               e.stopPropagation()
@@ -242,7 +242,7 @@ export default function PlotBoard() {
                           </button>
                           {!beat.label && (
                             <button
-                              className="pc-act danger"
+                              className="pc-act danger quiet"
                               title="Remove this beat from the outline"
                               onClick={(e) => {
                                 e.stopPropagation()

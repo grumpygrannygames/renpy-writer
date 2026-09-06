@@ -3,6 +3,7 @@ import ContextMenu, { type MenuItem } from './ContextMenu'
 import type { PassMode } from '@shared/api'
 import type { LabelEndKind } from '@shared/types'
 import { useStore } from '../state/store'
+import { beatName } from './PlotBoard'
 import ProjectSwitcher from './ProjectSwitcher'
 
 const END_KIND_LABEL: Record<LabelEndKind, string> = {
@@ -278,7 +279,7 @@ export default function Sidebar({
                         border: kind ? 'none' : '1px solid var(--text-faint)'
                       }}
                     />
-                    <span className="title">{beat.title}</span>
+                    <span className="title">{beatName(beat.title)}</span>
                     {kind && END_KIND_LABEL[kind] && (
                       <span className="kind">{END_KIND_LABEL[kind]}</span>
                     )}
