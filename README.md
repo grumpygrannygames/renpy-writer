@@ -124,7 +124,7 @@ See **[docs/web.md](docs/web.md)**.
 ## Contributing
 
 **Changes are welcome.** If you have fixed something, or added something that
-fits what the app is for, open a merge request.
+fits what the app is for, open a pull request.
 
 By sending a change you agree it can be used under the same licence as the rest,
 including in any paid hosted version the author may offer.
