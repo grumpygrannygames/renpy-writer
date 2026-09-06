@@ -182,7 +182,7 @@ app.whenReady().then(async () => {
   check('React mounted', shell.mounted)
   check('project gate rendered', shell.gate)
   check('heading reads the app name', shell.heading === 'Ren’Py Writer', String(shell.heading))
-  check('api exposes all 31 methods', shell.apiMethods === 31, String(shell.apiMethods))
+  check('api exposes all 32 methods', shell.apiMethods === 32, String(shell.apiMethods))
 
   console.log('\n[a broken bridge says so]')
   {

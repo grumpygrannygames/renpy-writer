@@ -34,6 +34,7 @@ import {
 } from './renders'
 import {
   commit as gitCommit,
+  fetchStatus as gitFetchStatus,
   pull as gitPull,
   push as gitPush,
   readStatus,
@@ -505,6 +506,7 @@ export function registerHandlers(register: Register, host: HostServices): void {
   register(IPC.capabilities, async () => host.capabilities)
 
   register(IPC.gitStatus, (root: string) => readStatus(root))
+  register(IPC.gitFetchStatus, (root: string) => gitFetchStatus(root))
   register(IPC.gitPull, (root: string) => gitPull(root))
   register(
     IPC.gitCommit,

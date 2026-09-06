@@ -49,16 +49,26 @@ export default function SyncPanel({ onClose }: { onClose: () => void }) {
     null
   )
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (askRemote = false) => {
     if (!root) return
-    const next = await api.gitStatus(root)
+    const next = askRemote ? await api.gitFetchStatus(root) : await api.gitStatus(root)
     setStatus(next)
     // Everything is selected to begin with: the common case is saving the lot.
     setSelected(new Set(next.changes.map((c) => c.path)))
   }, [root])
 
   useEffect(() => {
-    void refresh()
+    let stale = false
+    // Twice on purpose. The first is instant and comes from this machine, so
+    // the panel is never empty while something waits on a network. The second
+    // asks the remote and corrects the numbers a moment later -- which is the
+    // difference between "in step" and "in step as of an hour ago".
+    void refresh().then(() => {
+      if (!stale) void refresh(true)
+    })
+    return () => {
+      stale = true
+    }
   }, [refresh])
 
   const grouped = useMemo(() => {

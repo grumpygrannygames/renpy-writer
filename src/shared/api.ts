@@ -321,6 +321,8 @@ export interface RenpyWriterApi {
 
   /** What has changed since the last commit, and how the branch stands. */
   gitStatus(renpyRoot: string): Promise<GitStatus>
+  /** The same, after asking the remote what it has. Slower, and current. */
+  gitFetchStatus(renpyRoot: string): Promise<GitStatus>
   /** Bring in other machines' work. Fast-forward only. */
   gitPull(renpyRoot: string): Promise<GitResult>
   /** Record the named paths, optionally sending them on. */
@@ -366,6 +368,7 @@ export const IPC = {
   runScriptPass: 'script:pass',
   capabilities: 'host:capabilities',
   gitStatus: 'git:status',
+  gitFetchStatus: 'git:fetchStatus',
   gitPull: 'git:pull',
   gitCommit: 'git:commit',
   gitPush: 'git:push',

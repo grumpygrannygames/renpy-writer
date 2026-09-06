@@ -27,7 +27,7 @@ import { buildPrompt, buildProofreadPrompt, parseResponse } from '../src/core/pa
 import { runPass } from '../src/core/passes'
 import { cliRunner } from '../src/core/passes/runner'
 import { clampQuality, convertRender, findFfmpeg, planRenderSync, probeFfmpeg, targetDirFor } from '../src/core/renders'
-import { commit, pull, push, readStatus, resolvePull } from '../src/core/git'
+import { commit, fetchStatus, pull, push, readStatus, resolvePull } from '../src/core/git'
 import { createUserStore } from '../src/server/users'
 import { createSessionStore } from '../src/server/sessions'
 import {
@@ -1189,6 +1189,39 @@ async function main() {
       check('sending again has nothing to do', (await push(nadia)).message === 'Nothing to send.',
         (await push(nadia)).message)
 
+      // Reading the status locally cannot know about work somebody else has
+      // sent; only asking the remote can. The panel shows the first number
+      // instantly and corrects it with the second, so both have to be right.
+      const watcher = nodePath.join(base, 'watcher')
+      await git(base, ['clone', '--quiet', remote, watcher])
+      await identify(watcher, 'watcher')
+
+      await fsp.writeFile(nodePath.join(nadia, 'game', 'scripts', 'chapter_later.rpy'),
+        'label later:' + L + '    "Something new."' + L)
+      await commit(nadia, {
+        message: 'Sent while the other one was not looking',
+        paths: ['game/scripts/chapter_later.rpy'],
+        push: true
+      })
+
+      const unaware = await readStatus(watcher)
+      check('reading locally does not notice what arrived',
+        unaware.behind === 0, String(unaware.behind))
+      const aware = await fetchStatus(watcher)
+      check('asking the remote does', aware.behind === 1, String(aware.behind))
+      check('and it is otherwise the same answer',
+        aware.branch === unaware.branch && aware.upstream === unaware.upstream,
+        JSON.stringify({ branch: aware.branch, upstream: aware.upstream }))
+
+      // Offline is a reason to show what is known, not to show nothing.
+      await git(watcher, ['remote', 'set-url', 'origin', nodePath.join(base, 'nowhere.git')])
+      const offline = await fetchStatus(watcher)
+      check('a remote that cannot be reached still reports the branch',
+        offline.isRepo && offline.branch === aware.branch, JSON.stringify(offline.error))
+      check('and does not report an error for being offline',
+        offline.error === undefined, String(offline.error))
+      await git(watcher, ['remote', 'set-url', 'origin', remote])
+
       // The second machine gets everything, images included.
       await git(base, ['clone', '--quiet', remote, bob])
       await identify(bob, 'bob')
@@ -1919,6 +1952,26 @@ async function main() {
         check('and does not claim it was submitted a second time',
           !again.message.includes('for review'), again.message)
 
+        // A host that says "pull request" should be quoted saying it. Being
+        // told to find a merge request on a site whose every button says
+        // something else sends somebody looking for the wrong thing.
+        await writeHook(
+          '  echo "Create a pull request for the branch by visiting:" >&2' + L +
+          '  echo "  https://github.example.com/tcfm/game/pull/new/branch" >&2')
+
+        const gh = await clone('gary')
+        const ghResult = await commit(gh, {
+          message: 'A line for a different host',
+          paths: [await scene(gh, 'gary_fix')],
+          push: true
+        })
+        check('a host that says pull request is quoted saying it',
+          ghResult.message.includes('no pull request was created'), ghResult.message)
+        check('and never the other word', !ghResult.message.includes('merge request'),
+          ghResult.message)
+        check('the link is labelled in its own terms',
+          ghResult.link?.label === 'Open a pull request', JSON.stringify(ghResult.link))
+
         // ---------------------------------------------------------------
         // The trap this was built to avoid: a link to a page that WOULD open
         // a merge request is not a merge request.
@@ -1939,6 +1992,10 @@ async function main() {
         check('and the link is marked as one that would open it, not one that did',
           offered.link?.exists === false &&
           offered.link?.url.includes('merge_requests/new'), JSON.stringify(offered.link))
+        check('and a host that says merge request keeps that word',
+          offered.link?.label === 'Open a merge request' &&
+          offered.message.includes('no merge request was created'),
+          JSON.stringify(offered.link) + ' | ' + offered.message)
 
         // ---------------------------------------------------------------
         // Being out of date is not a refusal, and must not become a proposal.

@@ -42,6 +42,7 @@ const api: RenpyWriterApi = {
   gitPull: (root: string) => ipcRenderer.invoke(IPC.gitPull, root),
   gitCommit: (root: string, input: CommitRequest) =>
     ipcRenderer.invoke(IPC.gitCommit, root, input),
+  gitFetchStatus: (root: string) => ipcRenderer.invoke(IPC.gitFetchStatus, root),
   gitPush: (root: string) => ipcRenderer.invoke(IPC.gitPush, root),
   gitResolvePull: (root: string, decisions: Decision[]) =>
     ipcRenderer.invoke(IPC.gitResolvePull, root, decisions),

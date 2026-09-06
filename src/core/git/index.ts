@@ -743,6 +743,25 @@ export async function resolvePull(cwd: string, decisions: Decision[]): Promise<G
   }
 }
 
+/**
+ * Ask the remote what it has, then report where this branch stands.
+ *
+ * `readStatus` alone answers from what is already on this machine, so "1 to
+ * bring in" can be an hour old and "in step" can be wrong. That is fine for
+ * the numbers shown after an action -- pulling and sending both talk to the
+ * remote themselves -- and not fine for the numbers somebody sees on opening
+ * the panel to decide whether to do anything.
+ *
+ * A failed fetch is not an error here. Being offline is a reason to show what
+ * is known rather than to show nothing.
+ */
+export async function fetchStatus(cwd: string): Promise<GitStatus> {
+  const before = await readStatus(cwd)
+  if (!before.isRepo || !before.upstream) return before
+  await run(cwd, ['fetch', '--quiet'])
+  return readStatus(cwd)
+}
+
 export interface CommitRequest {
   message: string
   /** Repository-relative paths to include. Nothing else is committed. */
@@ -863,6 +882,20 @@ function refusedByRemote(output: string): boolean {
   )
 }
 
+/**
+ * What this host calls a request to merge one branch into another.
+ *
+ * Not cosmetic. Somebody told to look for a merge request on a site whose
+ * every button says "pull request" is being sent to find something that, by
+ * that name, is not there. The link the remote printed already says which
+ * kind it is, so the word can come from the same place as the URL.
+ */
+function requestWord(url: string | null): string {
+  if (url && /\/(?:pull|pull-requests)\//i.test(url)) return 'pull request'
+  if (url && /merge_requests/i.test(url)) return 'merge request'
+  return 'merge request'
+}
+
 const LINK_EXISTS = /https?:\/\/[^\s]*?\/(?:merge_requests|pull|pull-requests)\/\d+/i
 const LINK_CREATE =
   /https?:\/\/[^\s]*(?:merge_requests\/new|pull\/new|pull-requests\/new|\/compare\/)[^\s]*/i
@@ -878,9 +911,15 @@ const LINK_CREATE =
 function findLink(output: string): GitLink | null {
   const tidy = (url: string): string => url.replace(/[).,;:]+$/, '')
   const existing = LINK_EXISTS.exec(output)
-  if (existing) return { url: tidy(existing[0]), label: 'View the merge request', exists: true }
+  if (existing) {
+    const url = tidy(existing[0])
+    return { url, label: `View the ${requestWord(url)}`, exists: true }
+  }
   const create = LINK_CREATE.exec(output)
-  if (create) return { url: tidy(create[0]), label: 'Open a merge request', exists: false }
+  if (create) {
+    const url = tidy(create[0])
+    return { url, label: `Open a ${requestWord(url)}`, exists: false }
+  }
   return null
 }
 
@@ -1058,8 +1097,8 @@ async function propose(
     ok: false,
     message:
       `${commits[0].toUpperCase()}${commits.slice(1)} ${are} up at ${remote} on ` +
-      `“${branch}”, but no merge request was created, so nobody has been asked to ` +
-      `look at ${them}.` +
+      `“${branch}”, but no ${requestWord(link?.url ?? null)} was created, so nobody has ` +
+      `been asked to look at ${them}.` +
       (link ? ' Use the link below to open one.' : ''),
     detail: [refusal, output].filter(Boolean).join('\n\n'),
     link: link ?? undefined
