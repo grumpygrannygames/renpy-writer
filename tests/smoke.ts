@@ -22,7 +22,7 @@ import { shouldWriteReference } from '../src/renderer/src/state/referenceSave'
 import { renameCharacter } from '../src/core/renpy/rename'
 import { resolveImageName, readPortrait } from '../src/core/renpy/images'
 import { imageNameAt } from '../src/renderer/src/imageHover'
-import { moveBeat } from '../src/core/renpy/restructure'
+import { moveBeat, planRemoveBeat, removeBeat } from '../src/core/renpy/restructure'
 import { classifyLine, needsProofreading, needsTranslation } from '../src/core/passes/language'
 import { buildPrompt, buildProofreadPrompt, parseResponse } from '../src/core/passes/prompt'
 import { runPass } from '../src/core/passes'
@@ -478,6 +478,76 @@ async function main() {
   check('a single block at zero is found', centreIndex([0], 0) === 0)
   const many = Array.from({ length: 5000 }, (_, i) => i * 24)
   check('scales to a full chapter', centreIndex(many, 24 * 3210 + 5) === 3210, String(centreIndex(many, 24 * 3210 + 5)))
+
+  console.log('\n[removing a scene from the script]')
+  {
+    const L = String.fromCharCode(10)
+    const script = [
+      'label one:',
+      '    ava "First."',
+      '    jump three',
+      '',
+      'label two:',
+      '    ava "Second."',
+      '',
+      'label three:',
+      '    ava "Third."',
+      '    return',
+      ''
+    ].join(L)
+
+    // What it would cost, before anything is done.
+    const plan = planRemoveBeat({ source: script, label: 'two' })
+    check('the plan counts the lines that would go', plan.lines === 3, String(plan.lines))
+    check('and finds nothing pointing at it', plan.referencedBy.length === 0,
+      JSON.stringify(plan.referencedBy))
+
+    const cut = removeBeat({ source: script, label: 'two' })
+    check('the scene is gone from the script', !cut.source.includes('label two:'), cut.source)
+    check('and its dialogue with it', !cut.source.includes('Second.'), cut.source)
+    check('the scenes around it are untouched',
+      cut.source.includes('label one:') && cut.source.includes('label three:'), cut.source)
+    check('and the file still parses', parseDocument(cut.source).nodes.length > 0)
+
+    // A scene something jumps to is refused, because the alternative is a
+    // game that stops at that line.
+    const guarded = removeBeat({ source: script, label: 'three' })
+    check('a scene that is jumped to is refused', !!guarded.error, String(guarded.error))
+    check('and says who jumps there',
+      (guarded.error ?? '').includes('one'), String(guarded.error))
+    check('and changes nothing', guarded.source === script, 'the script was rewritten')
+
+    // A jump from another file counts too: labels are global in Ren'Py.
+    const elsewhere = [{ fileName: 'other.rpy', text: 'label far:' + L + '    jump two' + L }]
+    const acrossFiles = removeBeat({ source: script, label: 'two', jumpsFrom: elsewhere })
+    check('a jump from another file is seen', !!acrossFiles.error, String(acrossFiles.error))
+    check('and names the file it is in',
+      (acrossFiles.error ?? '').includes('other.rpy'), String(acrossFiles.error))
+
+    // Removing a scene that ran into the next one writes that out first, so
+    // the story keeps doing what it did.
+    const linear = [
+      'label alpha:',
+      '    ava "One."',
+      '',
+      'label beta:',
+      '    ava "Two."',
+      '',
+      'label gamma:',
+      '    ava "Three."',
+      '    return',
+      ''
+    ].join(L)
+    const middle = removeBeat({ source: linear, label: 'beta' })
+    check('removing a fallen-through scene succeeds', !middle.error, String(middle.error))
+    check('no jump is invented for the scene before it',
+      !middle.source.includes('jump beta') && !middle.source.includes('jump gamma'),
+      middle.source)
+    check('and the plan said what would follow instead',
+      planRemoveBeat({ source: linear, label: 'beta' }).runsIntoInstead?.to === 'gamma',
+      JSON.stringify(planRemoveBeat({ source: linear, label: 'beta' }).runsIntoInstead))
+    check('beta is gone', !middle.source.includes('label beta:'), middle.source)
+  }
 
   console.log('\n[other languages in the script]')
   {
@@ -1106,8 +1176,15 @@ async function main() {
 
     // Every operation is either named a write or is a read on purpose; this
     // catches a new one being added and silently treated as readable.
+    // Operations that only look at things, whose names happen to read like
+    // changes. Listed rather than pattern-matched around, so adding one is a
+    // deliberate act.
+    const readsThatSoundLikeWrites = new Set<string>([IPC.planRemoveBeat, IPC.planRenderSync])
     const unclassified = Object.values(IPC).filter(
-      (channel) => !isWrite(channel) && /write|create|update|set|move|remove|commit|push|pull|convert|rename|pass/i.test(channel)
+      (channel) =>
+        !isWrite(channel) &&
+        !readsThatSoundLikeWrites.has(channel) &&
+        /write|create|update|set|move|remove|commit|push|pull|convert|rename|pass/i.test(channel)
     )
     check('no changing operation is left unclassified', unclassified.length === 0,
       JSON.stringify(unclassified))

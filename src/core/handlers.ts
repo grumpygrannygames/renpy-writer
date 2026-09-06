@@ -22,7 +22,7 @@ import { DRAFTS_DIR } from '@shared/types'
 import { LocalWorkspaceProvider } from '@core/workspace/LocalWorkspaceProvider'
 import { checkRenpyRoot, listScriptFiles, toFileSlug } from '@core/renpy/detect'
 import { parseEpisode } from '@core/renpy/labels'
-import { moveBeat } from '@core/renpy/restructure'
+import { moveBeat, planRemoveBeat, removeBeat as cutBeat } from '@core/renpy/restructure'
 import { runPass } from '@core/passes'
 import {
   BUILT_IN_ENCODER,
@@ -552,17 +552,64 @@ export function registerHandlers(register: Register, host: HostServices): void {
     }
   )
 
+  register(IPC.planRemoveBeat, async (root: string, beatId: string) => {
+    const provider = ws(root)
+    const sidecar = await readSidecarProject(provider)
+    if (!sidecar) throw new Error(`No project found at ${root}`)
+    const outline = await readOutline(provider)
+    const beat = outline.beats.find((b) => b.id === beatId)
+    if (!beat) throw new Error('That beat is no longer in the outline.')
+
+    const episode = sidecar.episodes.find((e) => e.id === beat.episodeId)
+    if (!beat.label || !episode) {
+      return { lines: 0, fileName: null, referencedBy: [], runsIntoInstead: null, unwritten: true }
+    }
+
+    const rel = relOf(sidecar.settings, episode)
+    const source = await provider.readText(rel)
+    // Every other episode, because a jump can come from a file that knows
+    // nothing about this one.
+    const elsewhere = []
+    for (const other of sidecar.episodes) {
+      if (other.id === episode.id) continue
+      const otherRel = relOf(sidecar.settings, other)
+      if (await provider.exists(otherRel)) {
+        elsewhere.push({ fileName: other.fileName, text: await provider.readText(otherRel) })
+      }
+    }
+    const plan = planRemoveBeat({ source, label: beat.label, jumpsFrom: elsewhere })
+    return { ...plan, fileName: episode.fileName, unwritten: false }
+  })
+
   register(IPC.removeBeat, async (root: string, beatId: string) => {
     const provider = ws(root)
     const outline = await readOutline(provider)
     const beat = outline.beats.find((b) => b.id === beatId)
     if (!beat) throw new Error('That beat is no longer in the outline.')
+    // A written beat is a scene: the label and its lines come out of the
+    // script too, and the outline follows on the next read.
     if (beat.label) {
-      throw new Error(
-        `“${beat.title}” is written: ${beat.label} is a label in the script. Remove it from ` +
-          'the script and it will leave the outline by itself.'
-      )
+      const sidecar = await readSidecarProject(provider)
+      if (!sidecar) throw new Error(`No project found at ${root}`)
+      const episode = sidecar.episodes.find((e) => e.id === beat.episodeId)
+      if (!episode) throw new Error('That beat belongs to an episode that is no longer here.')
+
+      const rel = relOf(sidecar.settings, episode)
+      const source = await provider.readText(rel)
+      const elsewhere = []
+      for (const other of sidecar.episodes) {
+        if (other.id === episode.id) continue
+        const otherRel = relOf(sidecar.settings, other)
+        if (await provider.exists(otherRel)) {
+          elsewhere.push({ fileName: other.fileName, text: await provider.readText(otherRel) })
+        }
+      }
+
+      const cut = cutBeat({ source, label: beat.label, jumpsFrom: elsewhere })
+      if (cut.error) throw new Error(cut.error)
+      await provider.writeText(rel, cut.source)
     }
+
     await writeOutline(provider, {
       version: 1,
       beats: outline.beats.filter((b) => b.id !== beatId)

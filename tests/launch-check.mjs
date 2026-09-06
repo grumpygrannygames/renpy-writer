@@ -182,7 +182,7 @@ app.whenReady().then(async () => {
   check('React mounted', shell.mounted)
   check('project gate rendered', shell.gate)
   check('heading reads the app name', shell.heading === 'Ren’Py Writer', String(shell.heading))
-  check('api exposes all 35 methods', shell.apiMethods === 35, String(shell.apiMethods))
+  check('api exposes all 36 methods', shell.apiMethods === 36, String(shell.apiMethods))
 
   console.log('\n[a broken bridge says so]')
   {
@@ -3358,7 +3358,7 @@ app.whenReady().then(async () => {
       };
     })()`)
 
-    check('a written beat offers no remove button', removal.writtenHasRemove === false,
+    check('a written beat offers removal too', removal.writtenHasRemove === true,
       String(removal.writtenHasRemove))
     check('an unwritten one can be removed',
       !(removal.left ?? []).includes('THEY FIND THE LETTER'),
@@ -3556,6 +3556,75 @@ app.whenReady().then(async () => {
   }
 
   for (const p of problems) check(p, false)
+
+  console.log('\n[removing a written scene]')
+  {
+    const chapter = path.join(root, 'game', 'scripts', 'chapter_2.rpy')
+    const before = await fs.readFile(chapter, 'utf8')
+
+    const asked = await js(`(async () => {
+      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Plot')?.click();
+      await wait(800);
+
+      // A scene nothing jumps to, so the removal is allowed.
+      const cards = Array.from(document.querySelectorAll('.plot-card'));
+      const card = cards.find(c => c.getAttribute('data-label') === 'ch2_kettle');
+      if (!card) return { stage: 'no kettle card', labels: cards.map(c => c.getAttribute('data-label')) };
+      card.querySelector('.pc-act.danger').click();
+      await wait(900);
+
+      const modal = document.querySelector('.remove-modal');
+      if (!modal) return { stage: 'no confirmation' };
+      return {
+        stage: 'ok',
+        heading: modal.querySelector('h2')?.textContent ?? null,
+        body: modal.textContent ?? '',
+        buttons: Array.from(modal.querySelectorAll('.actions-row button')).map(b => b.textContent)
+      };
+    })()`)
+
+    check('removing a written scene asks first', asked.stage === 'ok',
+      JSON.stringify(asked).slice(0, 200))
+    check('and names the scene', /CH2 KETTLE/.test(asked.heading ?? ''), String(asked.heading))
+    check('and says how much goes, and from where',
+      /\d+ lines/.test(asked.body ?? '') && /chapter_2\.rpy/.test(asked.body ?? ''),
+      String(asked.body).slice(0, 200))
+    check('and offers a way out', (asked.buttons ?? []).includes('Keep it'),
+      JSON.stringify(asked.buttons))
+
+    const untouched = await fs.readFile(chapter, 'utf8')
+    check('nothing is written while it is only asking', untouched === before,
+      'the script changed before anybody agreed')
+
+    const done = await js(`(async () => {
+      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      Array.from(document.querySelectorAll('.remove-modal .actions-row button'))
+        .find(b => b.textContent === 'Remove it').click();
+      await wait(1500);
+      return {
+        gone: !document.querySelector('.remove-modal'),
+        labels: Array.from(document.querySelectorAll('.plot-card'))
+          .map(c => c.getAttribute('data-label'))
+      };
+    })()`)
+
+    const after = await fs.readFile(chapter, 'utf8')
+    check('agreeing closes the question', done.gone === true, String(done.gone))
+    check('the label is gone from the script', !after.includes('label ch2_kettle:'),
+      after.slice(0, 80))
+    check('and its dialogue with it', !after.includes('beat 2.'), 'dialogue survived')
+    check('the scenes around it are still there',
+      after.includes('label ch2_arrival:') && (after.match(/^label /gm) ?? []).length >= 5,
+      'what is left: ' + JSON.stringify(after.match(/^label \w+/gm)))
+    check('no jump to the removed scene was invented',
+      !after.includes('jump ch2_kettle'), 'a dangling jump was written')
+    check('and the card is gone from the board',
+      !(done.labels ?? []).includes('ch2_kettle'), JSON.stringify(done.labels))
+    check('the file got shorter, not longer', after.length < before.length,
+      `${before.length} -> ${after.length}`)
+  }
 
   console.log(`\n${pass} passed, ${fail} failed`)
   win.destroy()

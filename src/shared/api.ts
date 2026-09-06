@@ -202,6 +202,20 @@ export interface Decision {
   text?: string
 }
 
+export interface RemoveBeatPlan {
+  /** Lines that would go from the script, blank ones after the block included. */
+  lines: number
+  /** The file they would go from. */
+  fileName: string | null
+  /** Labels that jump or call this one, wherever they live. */
+  referencedBy: string[]
+  /** When the scene before ran into this one, what it will run into instead. */
+  runsIntoInstead: { from: string; to: string | null } | null
+  /** True when the beat has no label, so removing it touches no script at all. */
+  unwritten: boolean
+  error?: string
+}
+
 export interface GitResult {
   ok: boolean
   message: string
@@ -330,6 +344,8 @@ export interface RenpyWriterApi {
     beatId: string,
     changes: { title?: string; description?: string }
   ): Promise<OpenedProject>
+  /** What removing a written beat would cost, without removing anything. */
+  planRemoveBeat(renpyRoot: string, beatId: string): Promise<RemoveBeatPlan>
   /**
    * Forget a beat that was never written.
    *
@@ -390,6 +406,7 @@ export const IPC = {
   createBeat: 'beats:create',
   updateBeat: 'beats:update',
   removeBeat: 'beats:remove',
+  planRemoveBeat: 'beats:planRemove',
   runScriptPass: 'script:pass',
   capabilities: 'host:capabilities',
   gitStatus: 'git:status',

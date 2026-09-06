@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { LabelEndKind } from '@shared/types'
 import { useStore } from '../state/store'
+import type { RemoveBeatPlan } from '@shared/api'
 
 const END_LABEL: Record<LabelEndKind, string> = {
   jump: '',
@@ -49,10 +50,14 @@ export default function PlotBoard() {
   const createBeat = useStore((s) => s.createBeat)
   const updateBeat = useStore((s) => s.updateBeat)
   const removeBeat = useStore((s) => s.removeBeat)
+  const planRemoveBeat = useStore((s) => s.planRemoveBeat)
 
   const [adding, setAdding] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
   const [noting, setNoting] = useState<{ id: string; text: string } | null>(null)
+  const [removing, setRemoving] = useState<
+    { id: string; title: string; plan: RemoveBeatPlan } | null
+  >(null)
   const [drag, setDrag] = useState<DragState | null>(null)
   const [dropAt, setDropAt] = useState<{ episodeId: string; index: number } | null>(null)
   const [dragEpisode, setDragEpisode] = useState<string | null>(null)
@@ -240,18 +245,28 @@ export default function PlotBoard() {
                           >
                             {beat.description ? 'Note' : '+ Note'}
                           </button>
-                          {!beat.label && (
-                            <button
-                              className="pc-act danger quiet"
-                              title="Remove this beat from the outline"
-                              onClick={(e) => {
-                                e.stopPropagation()
+                          <button
+                            className="pc-act danger quiet"
+                            title={
+                              beat.label
+                                ? 'Remove this beat, and its lines, from the script'
+                                : 'Remove this beat from the outline'
+                            }
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              // Nothing written, nothing to lose: an unwritten
+                              // beat is a card and goes without ceremony.
+                              if (!beat.label) {
                                 void removeBeat(beat.id)
-                              }}
-                            >
-                              &times;
-                            </button>
-                          )}
+                                return
+                              }
+                              void planRemoveBeat(beat.id).then((plan) => {
+                                if (plan) setRemoving({ id: beat.id, title: beat.title, plan })
+                              })
+                            }}
+                          >
+                            &times;
+                          </button>
                         </div>
                       </article>
                     </div>
@@ -340,6 +355,69 @@ export default function PlotBoard() {
               >
                 Save note
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {removing && (
+        <div className="modal-backdrop" onClick={() => setRemoving(null)}>
+          <div className="modal remove-modal" onClick={(e) => e.stopPropagation()}>
+            <h2>Remove {beatName(removing.title)}?</h2>
+
+            {removing.plan.referencedBy.length > 0 ? (
+              <>
+                <p className="error">
+                  {removing.plan.referencedBy.length === 1
+                    ? 'Another scene jumps here'
+                    : `${removing.plan.referencedBy.length} other scenes jump here`}
+                  , so removing it would leave them going nowhere.
+                </p>
+                <ul className="rm-list">
+                  {removing.plan.referencedBy.map((who) => (
+                    <li key={who}>{who}</li>
+                  ))}
+                </ul>
+                <p className="hint">
+                  Point those somewhere else first, and this can go.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="hint">
+                  <strong>{removing.plan.lines}</strong>{' '}
+                  {removing.plan.lines === 1 ? 'line' : 'lines'} will be removed from{' '}
+                  <code>{removing.plan.fileName}</code>. This writes to the script.
+                </p>
+                {removing.plan.runsIntoInstead && (
+                  <p className="hint">
+                    {beatName(removing.plan.runsIntoInstead.from)} runs straight into this
+                    scene, so afterwards it will run into{' '}
+                    {removing.plan.runsIntoInstead.to
+                      ? beatName(removing.plan.runsIntoInstead.to)
+                      : 'whatever follows the file'}{' '}
+                    instead.
+                  </p>
+                )}
+              </>
+            )}
+
+            <div className="actions-row">
+              <button onClick={() => setRemoving(null)}>
+                {removing.plan.referencedBy.length > 0 ? 'Close' : 'Keep it'}
+              </button>
+              {removing.plan.referencedBy.length === 0 && (
+                <button
+                  className="danger"
+                  onClick={() => {
+                    const id = removing.id
+                    setRemoving(null)
+                    void removeBeat(id)
+                  }}
+                >
+                  Remove it
+                </button>
+              )}
             </div>
           </div>
         </div>

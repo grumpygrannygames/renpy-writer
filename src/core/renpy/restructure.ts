@@ -122,6 +122,138 @@ function blockRange(doc: Doc, span: LabelSpan): { from: number; to: number } {
   return { from, to }
 }
 
+export interface RemoveBeatInput {
+  /** Text of the file the beat lives in. */
+  source: string
+  label: string
+  /** Every label in the project, so jumps from other files are seen too. */
+  jumpsFrom?: Array<{ fileName: string; text: string }>
+}
+
+export interface RemoveBeatPlan {
+  /** How many lines would go, blank ones after the block included. */
+  lines: number
+  /** Labels that jump or call this one, wherever they are. */
+  referencedBy: string[]
+  /**
+   * When the scene before this one runs straight into it, what it will run
+   * into once this is gone -- or null when there is nothing after it.
+   *
+   * Nothing is written to preserve this. Falling through to the next label is
+   * what fall-through means, and once the block is gone the next label is
+   * simply a different one. Writing `jump` to the label being deleted, which
+   * is what preserving the old behaviour would literally mean, produces a
+   * game that stops there.
+   */
+  runsIntoInstead: { from: string; to: string | null } | null
+  error?: string
+}
+
+export interface RemoveBeatResult extends RemoveBeatPlan {
+  source: string
+}
+
+/** Statements that hand control to a named label. */
+const REFERS_TO = (label: string): RegExp =>
+  new RegExp(`^\\s*(?:jump|call)\\s+${label}\\s*(?:\\(|$)`, 'm')
+
+/**
+ * Everywhere a label is jumped or called from, itself excluded.
+ *
+ * Ren'Py labels are global, so a scene can be entered from a file that knows
+ * nothing about the one it lives in. Looking only at the file being edited
+ * would miss exactly the references most likely to be forgotten.
+ */
+function referencesTo(
+  label: string,
+  own: Doc,
+  ownSpan: LabelSpan,
+  elsewhere: Array<{ fileName: string; text: string }>
+): string[] {
+  const found: string[] = []
+  const pattern = REFERS_TO(label)
+
+  const scan = (doc: Doc, where: string, skip?: LabelSpan): void => {
+    const spans = spansOf(doc)
+    for (const span of spans) {
+      if (skip && span.label === skip.label) continue
+      const body = doc.lines.slice(span.startLine - 1, span.endLine).join('\n')
+      if (pattern.test(body)) found.push(where ? `${span.label} (${where})` : span.label)
+    }
+  }
+
+  scan(own, '', ownSpan)
+  for (const other of elsewhere) scan(split(other.text), other.fileName)
+  return found
+}
+
+/**
+ * What removing a beat would cost, without removing anything.
+ *
+ * Asked before the confirmation is shown, because "are you sure" is worth
+ * nothing next to "47 lines, and two scenes jump here".
+ */
+export function planRemoveBeat(input: RemoveBeatInput): RemoveBeatPlan {
+  const doc = split(input.source)
+  const span = spansOf(doc).find((s) => s.label === input.label)
+  if (!span) {
+    return {
+      lines: 0,
+      referencedBy: [],
+      runsIntoInstead: null,
+      error: `${input.label} is not in this file.`
+    }
+  }
+  const { from, to } = blockRange(doc, span)
+  const spans = spansOf(doc)
+  const index = spans.findIndex((sp) => sp.label === input.label)
+  const before = spans[index - 1]
+  const after = spans[index + 1]
+  const runsIntoInstead =
+    before && before.endKind === 'fallthrough' && before.fallsThroughTo === input.label
+      ? { from: before.label, to: after ? after.label : null }
+      : null
+
+  return {
+    lines: to - from,
+    referencedBy: referencesTo(input.label, doc, span, input.jumpsFrom ?? []),
+    runsIntoInstead
+  }
+}
+
+/**
+ * Cut a label block out of a script.
+ *
+ * Only the block goes. A scene that ran straight into this one now runs into
+ * whatever follows, which is what removing a scene means -- and the plan says
+ * so before anybody agrees to it.
+ *
+ * Refuses while anything still jumps here. A dangling jump is a game that
+ * stops at that line, and the writer is far better placed to decide where it
+ * should go instead than this is.
+ */
+export function removeBeat(input: RemoveBeatInput): RemoveBeatResult {
+  const plan = planRemoveBeat(input)
+  if (plan.error) return { ...plan, source: input.source }
+  if (plan.referencedBy.length > 0) {
+    return {
+      ...plan,
+      source: input.source,
+      error:
+        `${input.label} is still jumped to from ${plan.referencedBy.join(', ')}. ` +
+        'Removing it would leave those going nowhere, so nothing was changed.'
+    }
+  }
+
+  const doc = split(input.source)
+  const span = spansOf(doc).find((sp) => sp.label === input.label)!
+  const { from, to } = blockRange(doc, span)
+  doc.lines.splice(from, to - from)
+  doc.eols.splice(from, to - from)
+
+  return { ...plan, source: join(doc) }
+}
+
 export interface MoveBeatInput {
   /** Text of the file the beat is leaving. */
   source: string

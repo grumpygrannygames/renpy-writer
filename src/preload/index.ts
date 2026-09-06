@@ -47,6 +47,8 @@ const api: RenpyWriterApi = {
   updateBeat: (root: string, beatId: string, changes: { title?: string; description?: string }) =>
     ipcRenderer.invoke(IPC.updateBeat, root, beatId, changes),
   removeBeat: (root: string, beatId: string) => ipcRenderer.invoke(IPC.removeBeat, root, beatId),
+  planRemoveBeat: (root: string, beatId: string) =>
+    ipcRenderer.invoke(IPC.planRemoveBeat, root, beatId),
   gitFetchStatus: (root: string) => ipcRenderer.invoke(IPC.gitFetchStatus, root),
   gitPush: (root: string) => ipcRenderer.invoke(IPC.gitPush, root),
   gitResolvePull: (root: string, decisions: Decision[]) =>

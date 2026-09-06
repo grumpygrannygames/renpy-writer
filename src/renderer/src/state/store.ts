@@ -5,6 +5,7 @@ import type {
   CreateProjectInput,
   OpenedProject,
   HostCapabilities,
+  RemoveBeatPlan,
   LineChange,
   PassMode
 } from '@shared/api'
@@ -130,6 +131,7 @@ interface AppState {
   createBeat: (episodeId: string, title: string) => Promise<void>
   updateBeat: (beatId: string, changes: { title?: string; description?: string }) => Promise<void>
   removeBeat: (beatId: string) => Promise<void>
+  planRemoveBeat: (beatId: string) => Promise<RemoveBeatPlan | null>
   moveBeat: (input: {
     label: string
     fromEpisodeId: string
@@ -425,6 +427,17 @@ export const useStore = create<AppState>((set, get) => ({
       set({ opened: await api.updateBeat(opened.project.renpyRoot, beatId, changes) })
     } catch (e) {
       set({ error: message(e) })
+    }
+  },
+
+  planRemoveBeat: async (beatId) => {
+    const opened = get().opened
+    if (!opened) return null
+    try {
+      return await api.planRemoveBeat(opened.project.renpyRoot, beatId)
+    } catch (e) {
+      set({ error: message(e) })
+      return null
     }
   },
 
