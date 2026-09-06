@@ -22,7 +22,7 @@ import { shouldWriteReference } from '../src/renderer/src/state/referenceSave'
 import { renameCharacter } from '../src/core/renpy/rename'
 import { resolveImageName, readPortrait } from '../src/core/renpy/images'
 import { imageNameAt } from '../src/renderer/src/imageHover'
-import { moveBeat, planRemoveBeat, removeBeat } from '../src/core/renpy/restructure'
+import { appendBeat, moveBeat, planRemoveBeat, removeBeat } from '../src/core/renpy/restructure'
 import { classifyLine, needsProofreading, needsTranslation } from '../src/core/passes/language'
 import { buildPrompt, buildProofreadPrompt, parseResponse } from '../src/core/passes/prompt'
 import { runPass } from '../src/core/passes'
@@ -478,6 +478,60 @@ async function main() {
   check('a single block at zero is found', centreIndex([0], 0) === 0)
   const many = Array.from({ length: 5000 }, (_, i) => i * 24)
   check('scales to a full chapter', centreIndex(many, 24 * 3210 + 5) === 3210, String(centreIndex(many, 24 * 3210 + 5)))
+
+  console.log('\n[a planned scene is a real one]')
+  {
+    const L = String.fromCharCode(10)
+    const script = [
+      'label one:',
+      '    ava "Something happens."',
+      '    return',
+      ''
+    ].join(L)
+
+    const grown = appendBeat(script, 'they_find_the_letter')
+    check('the label is written into the script',
+      grown.includes('label they_find_the_letter:'), grown)
+    check('with a body, so Ren\'Py can load it',
+      /label they_find_the_letter:\s*\n\s+pass/.test(grown), JSON.stringify(grown))
+    check('and the scene before it is untouched',
+      grown.includes('ava "Something happens."') && grown.includes('label one:'), grown)
+    check('the file still parses', parseDocument(grown).nodes.length > 0)
+
+    const spans = parseEpisode('ch.rpy', grown).labels
+    const planned = spans.find((l) => l.label === 'they_find_the_letter')
+    check('the new scene is found as a label', !!planned, JSON.stringify(spans.map((l) => l.label)))
+    check('and is reported as having nothing in it', planned?.empty === true,
+      JSON.stringify(planned))
+    check('while the one that was written is not',
+      spans.find((l) => l.label === 'one')?.empty === false,
+      JSON.stringify(spans.find((l) => l.label === 'one')))
+
+    // Emptiness is about content, not about length: structure does not count.
+    const structural = parseEpisode('ch.rpy', [
+      'label planned:',
+      '    # somewhere for the letter scene',
+      '',
+      '    jump next_one',
+      '',
+      'label next_one:',
+      '    ava "Here."',
+      '    return',
+      ''
+    ].join(L)).labels
+    check('a comment and a jump are still nothing written',
+      structural.find((l) => l.label === 'planned')?.empty === true,
+      JSON.stringify(structural.find((l) => l.label === 'planned')))
+
+    // Two scenes planned with the same name must not collide: Ren'Py labels
+    // are global, and a duplicate is a script that will not load.
+    const twice = appendBeat(grown, 'they_find_the_letter_2')
+    const both = parseEpisode('ch.rpy', twice).labels.map((l) => l.label)
+    check('a second one can sit beside the first',
+      both.filter((l) => l.startsWith('they_find_the_letter')).length === 2,
+      JSON.stringify(both))
+    check('and no name is repeated', new Set(both).size === both.length, JSON.stringify(both))
+  }
 
   console.log('\n[removing a scene from the script]')
   {

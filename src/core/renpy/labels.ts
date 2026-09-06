@@ -80,13 +80,26 @@ export function parseEpisode(fileName: string, raw: string): ParsedEpisode {
       // Otherwise the label just runs off its end into the next one.
     }
 
+    // Anything a reader would call content: dialogue, a choice, a stage
+    // direction. Structure on its own is a scene waiting to be written.
+    let empty = true
+    for (let i = start.line + 1; i <= end; i++) {
+      const trimmed = lines[i].trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      if (/^(?:pass|return)$/.test(trimmed)) continue
+      if (BARE_JUMP_RE.test(trimmed)) continue
+      empty = false
+      break
+    }
+
     return {
       label: start.label,
       startLine: start.line + 1,
       endLine: end + 1,
       endKind,
       trailingJump,
-      fallsThroughTo: endKind === 'fallthrough' ? (next?.label ?? null) : null
+      fallsThroughTo: endKind === 'fallthrough' ? (next?.label ?? null) : null,
+      empty
     }
   })
 

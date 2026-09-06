@@ -3284,14 +3284,15 @@ app.whenReady().then(async () => {
       const titles = Array.from(document.querySelectorAll('.pc-title')).map(e => e.textContent);
       return {
         stage: 'ok', before, after: document.querySelectorAll('.plot-card').length,
-        titles, titlesBefore
+        titles, titlesBefore,
+        error: document.querySelector('.error')?.textContent ?? null
       };
     })()`)
 
     check('a beat can be added from the plot board', added.stage === 'ok',
       JSON.stringify(added).slice(0, 160))
     check('and appears as a card', added.after === added.before + 1,
-      `${added.before} -> ${added.after}`)
+      `${added.before} -> ${added.after} | ${added.error ?? 'no error shown'}`)
     check('shown without its underscores',
       (added.titles ?? []).includes('THEY FIND THE LETTER'),
       JSON.stringify((added.titles ?? []).slice(-3)))
@@ -3302,8 +3303,8 @@ app.whenReady().then(async () => {
     const outlineAfterAdd = JSON.parse(await fs.readFile(outlineFile, 'utf8'))
     const planned = outlineAfterAdd.beats.find((b) => b.title === 'they_find_the_letter')
     check('it reached the outline file', !!planned, JSON.stringify(outlineAfterAdd.beats.length))
-    check('with no label, because nothing has been written for it',
-      planned?.label === null, JSON.stringify(planned))
+    check('and is a real label, so it can be opened and typed into',
+      planned?.label === 'they_find_the_letter', JSON.stringify(planned))
 
     // A note on the beat, which is the point of planning one before writing.
     const noted = await js(`(async () => {
@@ -3338,15 +3339,19 @@ app.whenReady().then(async () => {
 
     const scriptStillThere = await fs.readFile(
       path.join(root, 'game', 'scripts', 'chapter_2.rpy'), 'utf8')
-    check('and nothing was written into the script for it',
-      !scriptStillThere.includes('they_find_the_letter'), 'label leaked into the script')
+    const plannedBody = (scriptStillThere.split('label they_find_the_letter:')[1] ?? '').trim()
+    check("the label is in the script, so it can be opened and typed into",
+      scriptStillThere.includes('label they_find_the_letter:'),
+      scriptStillThere.slice(-120))
+    check('with a body, so the game still loads',
+      plannedBody.startsWith('pass'), JSON.stringify(plannedBody.slice(0, 40)))
 
     // Removing: offered for a beat nobody has written, refused for one in the
     // script, because a card is not a reason to delete a scene.
     const removal = await js(`(async () => {
       const wait = (ms) => new Promise(r => setTimeout(r, ms));
       const cards = Array.from(document.querySelectorAll('.plot-card'));
-      const written = cards.find(c => !c.textContent.includes('not written'));
+      const written = cards.find(c => !c.textContent.includes('nothing written yet'));
       const planned = cards.find(c =>
         c.querySelector('.pc-title')?.textContent === 'THEY FIND THE LETTER');
       const writtenHasRemove = !!written?.querySelector('.pc-act.danger');
@@ -3354,15 +3359,16 @@ app.whenReady().then(async () => {
       await wait(900);
       return {
         stage: 'ok', writtenHasRemove,
-        left: Array.from(document.querySelectorAll('.pc-title')).map(e => e.textContent)
+        left: Array.from(document.querySelectorAll('.pc-title')).map(e => e.textContent),
+        error: document.querySelector('.error')?.textContent ?? null
       };
     })()`)
 
     check('a written beat offers removal too', removal.writtenHasRemove === true,
       String(removal.writtenHasRemove))
-    check('an unwritten one can be removed',
+    check('an empty one can be removed',
       !(removal.left ?? []).includes('THEY FIND THE LETTER'),
-      JSON.stringify((removal.left ?? []).slice(-3)))
+      JSON.stringify(removal.left) + ' | ' + (removal.error ?? 'no error'))
     const outlineAfterRemove = JSON.parse(await fs.readFile(outlineFile, 'utf8'))
     check('and it left the outline file',
       !outlineAfterRemove.beats.some((b) => b.title === 'they_find_the_letter'),

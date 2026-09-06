@@ -122,6 +122,45 @@ function blockRange(doc: Doc, span: LabelSpan): { from: number; to: number } {
   return { from, to }
 }
 
+/**
+ * Add an empty scene to the end of a script.
+ *
+ * A beat used to exist only in the outline, which meant opening it landed
+ * somebody in a script with nothing of theirs in it and no way to make one.
+ * So the label goes in for real, with a `pass` for a body: valid Ren'Py that
+ * does nothing, and something to start typing into.
+ *
+ * Appended rather than woven in. Where a new scene belongs is a decision, and
+ * dragging it there afterwards is both obvious and already possible.
+ */
+export function appendBeat(source: string, label: string): string {
+  const doc = split(source)
+  const eol = nativeEol(doc)
+
+  // Trailing blank lines are dropped so the gap below is exactly one.
+  while (doc.lines.length > 0 && doc.lines[doc.lines.length - 1].trim() === '') {
+    doc.lines.pop()
+    doc.eols.pop()
+  }
+
+  const indent = (() => {
+    const spans = spansOf(doc)
+    const last = spans[spans.length - 1]
+    if (!last) return '    '
+    for (let i = last.startLine; i < last.endLine; i++) {
+      const line = doc.lines[i]
+      if (line && line.trim()) return line.slice(0, line.length - line.trimStart().length)
+    }
+    return '    '
+  })()
+
+  for (const line of ['', `label ${label}:`, `${indent}pass`, '']) {
+    doc.lines.push(line)
+    doc.eols.push(eol)
+  }
+  return join(doc)
+}
+
 export interface RemoveBeatInput {
   /** Text of the file the beat lives in. */
   source: string

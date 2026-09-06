@@ -414,7 +414,8 @@ export const useStore = create<AppState>((set, get) => ({
     const opened = get().opened
     if (!opened) return
     try {
-      set({ opened: await api.createBeat(opened.project.renpyRoot, episodeId, title) })
+      const after = await api.createBeat(opened.project.renpyRoot, episodeId, title)
+      set({ opened: after, parsed: after.parsedEpisodes })
     } catch (e) {
       set({ error: message(e) })
     }
@@ -424,7 +425,8 @@ export const useStore = create<AppState>((set, get) => ({
     const opened = get().opened
     if (!opened) return
     try {
-      set({ opened: await api.updateBeat(opened.project.renpyRoot, beatId, changes) })
+      const after = await api.updateBeat(opened.project.renpyRoot, beatId, changes)
+      set({ opened: after, parsed: after.parsedEpisodes })
     } catch (e) {
       set({ error: message(e) })
     }
@@ -445,7 +447,8 @@ export const useStore = create<AppState>((set, get) => ({
     const opened = get().opened
     if (!opened) return
     try {
-      set({ opened: await api.removeBeat(opened.project.renpyRoot, beatId) })
+      const after = await api.removeBeat(opened.project.renpyRoot, beatId)
+      set({ opened: after, parsed: after.parsedEpisodes })
     } catch (e) {
       // Refusing to remove a written beat is a message worth reading, not a
       // silent no-op that leaves somebody clicking the same button again.

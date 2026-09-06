@@ -166,6 +166,15 @@ export interface LabelSpan {
   trailingJump: string | null
   /** Label implicitly run into, when endKind is 'fallthrough'. */
   fallsThroughTo: string | null
+  /**
+   * Nothing has been written here yet.
+   *
+   * A label whose body is only structure -- a `pass`, a jump, a return, a
+   * blank line -- is a scene somebody has planned and not written. It is a
+   * real label, so the script runs and the beat can be opened and typed
+   * into; it just has nothing in it.
+   */
+  empty: boolean
 }
 
 export interface ParsedEpisode {

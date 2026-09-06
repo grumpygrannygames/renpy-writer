@@ -233,7 +233,9 @@ export default function PlotBoard() {
                               {END_LABEL[kind] || 'jumps on'}
                             </span>
                           )}
-                          {!beat.label && <span className="pc-kind">not written</span>}
+                          {(span?.empty ?? !beat.label) && (
+                            <span className="pc-kind">nothing written yet</span>
+                          )}
                           <span className="spacer" />
                           <button
                             className={'pc-act' + (beat.description ? '' : ' quiet')}
@@ -248,15 +250,16 @@ export default function PlotBoard() {
                           <button
                             className="pc-act danger quiet"
                             title={
-                              beat.label
-                                ? 'Remove this beat, and its lines, from the script'
-                                : 'Remove this beat from the outline'
+                              !beat.label || span?.empty
+                                ? 'Remove this beat'
+                                : 'Remove this beat, and its lines, from the script'
                             }
                             onClick={(e) => {
                               e.stopPropagation()
-                              // Nothing written, nothing to lose: an unwritten
-                              // beat is a card and goes without ceremony.
-                              if (!beat.label) {
+                              // Nothing written, nothing to lose. The label
+                              // may exist -- every beat has one now -- but an
+                              // empty scene is still just a card.
+                              if (!beat.label || span?.empty) {
                                 void removeBeat(beat.id)
                                 return
                               }

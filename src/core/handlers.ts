@@ -22,7 +22,12 @@ import { DRAFTS_DIR } from '@shared/types'
 import { LocalWorkspaceProvider } from '@core/workspace/LocalWorkspaceProvider'
 import { checkRenpyRoot, listScriptFiles, toFileSlug } from '@core/renpy/detect'
 import { parseEpisode } from '@core/renpy/labels'
-import { moveBeat, planRemoveBeat, removeBeat as cutBeat } from '@core/renpy/restructure'
+import {
+  appendBeat,
+  moveBeat,
+  planRemoveBeat,
+  removeBeat as cutBeat
+} from '@core/renpy/restructure'
 import { runPass } from '@core/passes'
 import {
   BUILT_IN_ENCODER,
@@ -503,6 +508,15 @@ export function registerHandlers(register: Register, host: HostServices): void {
     }
   )
 
+  /**
+   * A Ren'Py label: letters, digits and underscores, never starting with a
+   * digit. Anything else in the name a person typed becomes an underscore.
+   */
+  const toLabelName = (name: string): string => {
+    const slug = toFileSlug(name)
+    return /^[0-9]/.test(slug) ? `beat_${slug}` : slug || 'new_beat'
+  }
+
   register(IPC.createBeat, async (root: string, episodeId: string, title: string) => {
     const provider = ws(root)
     const sidecar = await readSidecarProject(provider)
@@ -513,19 +527,31 @@ export function registerHandlers(register: Register, host: HostServices): void {
     const named = title.trim()
     if (!named) throw new Error('A beat needs a name.')
 
-    const outline = await readOutline(provider)
-    // Added at the end of its own episode, which is where a new idea goes
-    // when nobody has said otherwise.
-    const last = outline.beats
-      .filter((b) => b.episodeId === episodeId)
-      .reduce((n, b) => Math.max(n, b.order + 1), 0)
-    await writeOutline(provider, {
-      version: 1,
-      beats: [
-        ...outline.beats,
-        { id: randomUUID(), episodeId, label: null, title: named, order: last }
-      ]
-    })
+    const episode = sidecar.episodes.find((e) => e.id === episodeId)!
+    const rel = relOf(sidecar.settings, episode)
+    if (!(await provider.exists(rel))) {
+      throw new Error(`${episode.fileName} is not in the game folder.`)
+    }
+
+    // Ren'Py labels are global, so the name has to be free everywhere, not
+    // just in this file.
+    const taken = new Set<string>()
+    for (const other of sidecar.episodes) {
+      const otherRel = relOf(sidecar.settings, other)
+      if (!(await provider.exists(otherRel))) continue
+      for (const span of parseEpisode(other.fileName, await provider.readText(otherRel)).labels) {
+        taken.add(span.label)
+      }
+    }
+
+    const base = toLabelName(named)
+    let label = base
+    for (let n = 2; taken.has(label); n++) label = `${base}_${n}`
+
+    // The label is written into the script, not just the outline. A beat that
+    // exists only in the outline opens into a script with nothing of it
+    // there, and no way to make one.
+    await provider.writeText(rel, appendBeat(await provider.readText(rel), label))
     return loadProject(host, root)
   })
 
@@ -578,7 +604,8 @@ export function registerHandlers(register: Register, host: HostServices): void {
       }
     }
     const plan = planRemoveBeat({ source, label: beat.label, jumpsFrom: elsewhere })
-    return { ...plan, fileName: episode.fileName, unwritten: false }
+    const span = parseEpisode(episode.fileName, source).labels.find((l) => l.label === beat.label)
+    return { ...plan, fileName: episode.fileName, unwritten: span?.empty ?? false }
   })
 
   register(IPC.removeBeat, async (root: string, beatId: string) => {
