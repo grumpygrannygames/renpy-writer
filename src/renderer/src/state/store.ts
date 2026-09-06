@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { shouldWriteReference } from './referenceSave'
 import type {
   CreateEpisodeInput,
   CreateProjectInput,
@@ -93,6 +94,17 @@ interface AppState {
   anchorLines: Record<string, number>
 
   reference: Reference
+  /**
+   * Which project the reference in hand was read from, or null when it has
+   * not been read yet.
+   *
+   * The saves are debounced, so a write can land more than a second after the
+   * edit that caused it -- by which time the open project may have changed,
+   * or may not have finished loading. Without knowing where this data came
+   * from, such a write puts one project's notes into another, or writes an
+   * empty reference over a real one.
+   */
+  referenceFor: string | null
 
   /**
    * What this installation can do. Everything is assumed available until the
@@ -193,6 +205,7 @@ export const useStore = create<AppState>((set, get) => ({
   saveError: null,
   anchorLines: {},
   reference: EMPTY_REFERENCE,
+  referenceFor: null,
   lastMove: null,
   pass: null,
 
@@ -244,12 +257,16 @@ export const useStore = create<AppState>((set, get) => ({
     set({ loading: true, error: null })
     try {
       const opened = await api.createProject(input)
-      set({ opened, tabs: [], activeTab: null, parsed: opened.parsedEpisodes, characters: [] })
+      forgetReference()
+      set({
+        opened, tabs: [], activeTab: null, parsed: opened.parsedEpisodes,
+        characters: [], reference: EMPTY_REFERENCE, referenceFor: null
+      })
       const [cast, reference] = await Promise.all([
         api.scanCharacters(opened.project.renpyRoot),
         api.readReference(opened.project.renpyRoot)
       ])
-      set({ characters: cast, reference })
+      set({ characters: cast, reference, referenceFor: opened.project.renpyRoot })
       await get().refreshProjects()
     } catch (e) {
       set({ error: message(e) })
@@ -263,12 +280,16 @@ export const useStore = create<AppState>((set, get) => ({
     set({ loading: true, error: null })
     try {
       const opened = await api.openProject(root)
-      set({ opened, tabs: [], activeTab: null, parsed: opened.parsedEpisodes, characters: [] })
+      forgetReference()
+      set({
+        opened, tabs: [], activeTab: null, parsed: opened.parsedEpisodes,
+        characters: [], reference: EMPTY_REFERENCE, referenceFor: null
+      })
       const [cast, reference] = await Promise.all([
         api.scanCharacters(root),
         api.readReference(root)
       ])
-      set({ characters: cast, reference })
+      set({ characters: cast, reference, referenceFor: root })
       await get().refreshProjects()
     } catch (e) {
       set({ error: message(e) })
@@ -277,7 +298,8 @@ export const useStore = create<AppState>((set, get) => ({
     }
   },
 
-  closeProject: () =>
+  closeProject: () => {
+    forgetReference()
     set({
       opened: null,
       tabs: [],
@@ -285,8 +307,10 @@ export const useStore = create<AppState>((set, get) => ({
       parsed: {},
       characters: [],
       reference: EMPTY_REFERENCE,
+      referenceFor: null,
       error: null
-    }),
+    })
+  },
 
   removeProject: async (id) => {
     set({ projects: await api.removeProject(id) })
@@ -584,9 +608,10 @@ export const useStore = create<AppState>((set, get) => ({
       clearTimeout(referenceTimer)
       referenceTimer = null
     }
-    const { opened, reference } = get()
-    if (!opened) return
-    await api.writeReference(opened.project.renpyRoot, reference)
+    const { opened, reference, referenceFor } = get()
+    const root = opened?.project.renpyRoot ?? null
+    if (!shouldWriteReference(root, root, referenceFor)) return
+    await api.writeReference(root!, reference)
   },
 
   saveTab: async (fileName) => {
@@ -680,13 +705,31 @@ export const useStore = create<AppState>((set, get) => ({
   }
 }))
 
-/** Debounced write of the reference files, matching how script edits save. */
+/** Drop a write that has not happened yet, because it is about to be wrong. */
+function forgetReference(): void {
+  if (referenceTimer) clearTimeout(referenceTimer)
+  referenceTimer = null
+}
+
+/**
+ * Debounced write of the reference files, matching how script edits save.
+ *
+ * The check on the way out is the important part. This fires over a second
+ * after the edit that scheduled it, and in that time the project can have
+ * been closed and another opened -- so it writes only if what is in hand
+ * still belongs to what is open. Without that, closing a project and opening
+ * one wrote an empty reference over somebody's characters, and the app looked
+ * like it had simply forgotten them.
+ */
 function scheduleReferenceSave(get: () => AppState): void {
   if (referenceTimer) clearTimeout(referenceTimer)
+  const scheduledFor = get().opened?.project.renpyRoot ?? null
   referenceTimer = setTimeout(() => {
     referenceTimer = null
-    const { opened, reference } = get()
-    if (opened) void api.writeReference(opened.project.renpyRoot, reference)
+    const { opened, reference, referenceFor } = get()
+    const root = opened?.project.renpyRoot ?? null
+    if (!shouldWriteReference(scheduledFor, root, referenceFor)) return
+    void api.writeReference(root!, reference)
   }, AUTOSAVE_MS)
 }
 

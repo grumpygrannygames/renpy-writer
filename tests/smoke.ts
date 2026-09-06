@@ -18,6 +18,7 @@ import { buildLabeller } from '../src/renderer/src/characterLabel'
 import { readReference, writeReference } from '../src/core/projects/reference'
 import { buildLinkIndex, parseLinks, linkedNames } from '../src/renderer/src/wikiLink'
 import { centreIndex } from '../src/renderer/src/anchor'
+import { shouldWriteReference } from '../src/renderer/src/state/referenceSave'
 import { renameCharacter } from '../src/core/renpy/rename'
 import { resolveImageName, readPortrait } from '../src/core/renpy/images'
 import { imageNameAt } from '../src/renderer/src/imageHover'
@@ -477,6 +478,40 @@ async function main() {
   check('a single block at zero is found', centreIndex([0], 0) === 0)
   const many = Array.from({ length: 5000 }, (_, i) => i * 24)
   check('scales to a full chapter', centreIndex(many, 24 * 3210 + 5) === 3210, String(centreIndex(many, 24 * 3210 + 5)))
+
+  console.log('\n[reference saves: a write that waited a second]')
+  {
+    // Characters, locations and notes save on a debounce, so the write lands
+    // over a second after the edit. What can happen in that second is the
+    // whole problem: a project closed, another opened, or the same one
+    // reopened and still loading.
+    const A = 'C:/games/one'
+    const B = 'C:/games/two'
+
+    check('an ordinary edit is written',
+      shouldWriteReference(A, A, A) === true)
+
+    // The one that emptied a real project's characters. The reference had not
+    // been read yet, so what was in memory was a blank placeholder -- and
+    // writing it turned two people with names and ages into "characters": [].
+    check('nothing is written before the reference has been read',
+      shouldWriteReference(A, A, null) === false)
+
+    check('one project\'s notes are not written into another',
+      shouldWriteReference(A, B, A) === false)
+
+    check('nor the other way round',
+      shouldWriteReference(B, A, B) === false)
+
+    check('a reference read from elsewhere is not written here',
+      shouldWriteReference(A, A, B) === false)
+
+    check('nothing is written with no project open',
+      shouldWriteReference(A, null, A) === false)
+
+    check('and not even when everything is null',
+      shouldWriteReference(null, null, null) === false)
+  }
 
   console.log('\n[rename: writing a display name back to the script]')
   await fs.mkdir(path.join(SCRATCH, 'game', 'scripts'), { recursive: true })

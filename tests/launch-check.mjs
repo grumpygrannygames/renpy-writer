@@ -3364,6 +3364,54 @@ app.whenReady().then(async () => {
     reordered.after[0] === reordered.before[reordered.before.length - 1],
     JSON.stringify(reordered.before) + ' -> ' + JSON.stringify(reordered.after))
 
+  console.log('\n[character profiles survive closing and reopening]')
+  {
+    // The reference files save on a debounce, so a write lands more than a
+    // second after the edit that scheduled it. Close a project and open one in
+    // that window and the write arrives holding the wrong thing -- which
+    // emptied the character profiles of a real project, silently, leaving the
+    // app looking like it had simply forgotten them.
+    const profileFile = path.join(root, '.renpywriter', 'characters.json')
+    const before = JSON.parse(await fs.readFile(profileFile, 'utf8'))
+
+    const cycled = await js(`(async () => {
+      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const pick = (sel, text) => Array.from(document.querySelectorAll(sel))
+        .find(e => (e.textContent || '').trim() === text);
+
+      document.querySelector('.switcher-trigger')?.click();
+      await wait(250);
+      const close = pick('.popover-item .pi-name', 'Close project');
+      if (!close) return { stage: 'no close control' };
+      close.closest('button').click();
+      await wait(300);
+      const atGate = !!document.querySelector('.gate-card');
+
+      // Straight back in, which is where the stale write used to land.
+      document.querySelector('.project-item')?.click();
+      await wait(600);
+      return { stage: 'ok', atGate, reopened: !!document.querySelector('.switcher-trigger') };
+    })()`)
+
+    // Longer than the autosave, so any stray write has arrived by now.
+    await sleep(2500)
+
+    const after = JSON.parse(await fs.readFile(profileFile, 'utf8'))
+    check('the app was driven through close and reopen', cycled.stage === 'ok',
+      JSON.stringify(cycled))
+    check('it went back to the project list', cycled.atGate === true, String(cycled.atGate))
+    check('and opened the project again', cycled.reopened === true, String(cycled.reopened))
+    check('the profiles are still there',
+      (after.characters ?? []).length === (before.characters ?? []).length &&
+      (after.characters ?? []).length > 0,
+      `${(before.characters ?? []).length} -> ${(after.characters ?? []).length}`)
+    check('with everything written about them',
+      JSON.stringify(after.characters) === JSON.stringify(before.characters),
+      JSON.stringify(after.characters ?? []).slice(0, 120))
+    check('and their order', JSON.stringify(after.characterOrder) ===
+      JSON.stringify(before.characterOrder), JSON.stringify(after.characterOrder))
+  }
+
   console.log('\n[nothing was lost]')
   // The plot test moved a beat between files, so per-file comparison is not
   // meaningful. What must hold is that no label vanished from the project.
