@@ -416,6 +416,8 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const after = await api.createBeat(opened.project.renpyRoot, episodeId, title)
       set({ opened: after, parsed: after.parsedEpisodes })
+      const file = after.episodes.find((e) => e.id === episodeId)?.fileName
+      if (file) await reloadTabs(opened.project.renpyRoot, [file], get, set)
     } catch (e) {
       set({ error: message(e) })
     }
@@ -446,9 +448,13 @@ export const useStore = create<AppState>((set, get) => ({
   removeBeat: async (beatId) => {
     const opened = get().opened
     if (!opened) return
+    // Which file it lived in, before it stops being in the outline.
+    const episodeId = opened.beats.find((b) => b.id === beatId)?.episodeId
+    const file = opened.episodes.find((e) => e.id === episodeId)?.fileName
     try {
       const after = await api.removeBeat(opened.project.renpyRoot, beatId)
       set({ opened: after, parsed: after.parsedEpisodes })
+      if (file) await reloadTabs(opened.project.renpyRoot, [file], get, set)
     } catch (e) {
       // Refusing to remove a written beat is a message worth reading, not a
       // silent no-op that leaves somebody clicking the same button again.
@@ -760,6 +766,33 @@ export const useStore = create<AppState>((set, get) => ({
 function forgetReference(): void {
   if (referenceTimer) clearTimeout(referenceTimer)
   referenceTimer = null
+}
+
+/**
+/**
+ * Bring open tabs back in line with files the app has just rewritten.
+ *
+ * Without this an editor keeps showing the text from before, and its autosave
+ * writes that back a second later -- so a scene deleted from the plot board
+ * reappears in the script, put there by the tab nobody had touched.
+ */
+async function reloadTabs(
+  root: string,
+  fileNames: string[],
+  get: () => AppState,
+  set: (fn: (s: AppState) => Partial<AppState>) => void
+): Promise<void> {
+  for (const fileName of new Set(fileNames)) {
+    if (!get().tabs.some((t) => t.key === fileName)) continue
+    const content = await api.readEpisode(root, fileName)
+    set((s) => ({
+      tabs: s.tabs.map((t) =>
+        isEpisodeTab(t) && t.fileName === fileName
+          ? { ...t, content, savedContent: content }
+          : t
+      )
+    }))
+  }
 }
 
 /**

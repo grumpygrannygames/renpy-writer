@@ -54,7 +54,14 @@ export default function PlotBoard() {
 
   const [adding, setAdding] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
-  const [noting, setNoting] = useState<{ id: string; text: string } | null>(null)
+  const [openBeat, setOpenBeat] = useState<{
+    id: string
+    title: string
+    label: string | null
+    note: string
+    fileName: string
+    empty: boolean
+  } | null>(null)
   const [removing, setRemoving] = useState<
     { id: string; title: string; plan: RemoveBeatPlan } | null
   >(null)
@@ -216,7 +223,16 @@ export default function PlotBoard() {
                           e.stopPropagation()
                           void drop(ep.id, i)
                         }}
-                        onClick={() => void openEpisode(ep.fileName)}
+                        onClick={() =>
+                          setOpenBeat({
+                            id: beat.id,
+                            title: beat.title,
+                            label: beat.label,
+                            note: beat.description ?? '',
+                            fileName: ep.fileName,
+                            empty: span?.empty ?? !beat.label
+                          })
+                        }
                         // The card reads as prose; the label is what the engine
                         // actually calls this, and is worth being able to see
                         // without opening the script.
@@ -225,7 +241,9 @@ export default function PlotBoard() {
                       >
                         <div className="pc-title">{beatName(beat.title)}</div>
                         {beat.description && (
-                          <div className="pc-note">{beat.description}</div>
+                          <div className="pc-note" title={beat.description}>
+                            {beat.description}
+                          </div>
                         )}
                         <div className="pc-meta">
                           {kind && (
@@ -239,10 +257,17 @@ export default function PlotBoard() {
                           <span className="spacer" />
                           <button
                             className={'pc-act' + (beat.description ? '' : ' quiet')}
-                            title={beat.description ? 'Edit the note' : 'Add a note'}
+                            title={beat.description ? 'Read the note' : 'Add a note'}
                             onClick={(e) => {
                               e.stopPropagation()
-                              setNoting({ id: beat.id, text: beat.description ?? '' })
+                              setOpenBeat({
+                                id: beat.id,
+                                title: beat.title,
+                                label: beat.label,
+                                note: beat.description ?? '',
+                                fileName: ep.fileName,
+                                empty: span?.empty ?? !beat.label
+                              })
                             }}
                           >
                             {beat.description ? 'Note' : '+ Note'}
@@ -332,31 +357,82 @@ export default function PlotBoard() {
         )}
       </div>
 
-      {noting && (
-        <div className="modal-backdrop" onClick={() => setNoting(null)}>
-          <div className="modal note-modal" onClick={(e) => e.stopPropagation()}>
-            <h2>A note on this beat</h2>
-            <p className="hint">
-              Kept with the outline, not written into the script. Somewhere to put what the
-              scene is for before it exists.
+      {openBeat && (
+        <div className="modal-backdrop" onClick={() => setOpenBeat(null)}>
+          <div className="modal beat-modal" onClick={(e) => e.stopPropagation()}>
+            <label className="field">
+              <span>Name</span>
+              <input
+                autoFocus
+                value={openBeat.title}
+                onChange={(e) => setOpenBeat({ ...openBeat, title: e.target.value })}
+              />
+            </label>
+            <p className="hint bm-where">
+              {openBeat.label ? (
+                <>
+                  <code>{openBeat.label}</code> in <code>{openBeat.fileName}</code>
+                  {openBeat.empty && ' — nothing written yet'}
+                </>
+              ) : (
+                'Not in the script'
+              )}
             </p>
-            <textarea
-              autoFocus
-              rows={6}
-              value={noting.text}
-              onChange={(e) => setNoting({ ...noting, text: e.target.value })}
-            />
+
+            <label className="field">
+              <span>Note</span>
+              <textarea
+                rows={7}
+                value={openBeat.note}
+                placeholder="What this scene is for, before it exists."
+                onChange={(e) => setOpenBeat({ ...openBeat, note: e.target.value })}
+              />
+            </label>
+            <p className="hint">Kept with the outline, never written into the script.</p>
+
             <div className="actions-row">
-              <button onClick={() => setNoting(null)}>Cancel</button>
+              <button
+                className="danger"
+                onClick={() => {
+                  const beat = openBeat
+                  setOpenBeat(null)
+                  // An empty scene has nothing to lose; one with words asks.
+                  if (!beat.label || beat.empty) {
+                    void removeBeat(beat.id)
+                    return
+                  }
+                  void planRemoveBeat(beat.id).then((plan) => {
+                    if (plan) setRemoving({ id: beat.id, title: beat.title, plan })
+                  })
+                }}
+              >
+                Delete
+              </button>
+              <span className="spacer" />
+              {openBeat.label && (
+                <button
+                  onClick={() => {
+                    const file = openBeat.fileName
+                    setOpenBeat(null)
+                    void openEpisode(file)
+                  }}
+                >
+                  Open in script
+                </button>
+              )}
+              <button onClick={() => setOpenBeat(null)}>Cancel</button>
               <button
                 className="primary"
                 onClick={() => {
-                  const { id, text } = noting
-                  setNoting(null)
-                  void updateBeat(id, { description: text.trim() })
+                  const beat = openBeat
+                  setOpenBeat(null)
+                  void updateBeat(beat.id, {
+                    title: beat.title,
+                    description: beat.note.trim()
+                  })
                 }}
               >
-                Save note
+                Save
               </button>
             </div>
           </div>

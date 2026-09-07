@@ -3313,24 +3313,40 @@ app.whenReady().then(async () => {
         .find(c => c.querySelector('.pc-title')?.textContent === 'THEY FIND THE LETTER');
       if (!card) return { stage: 'no card' };
       card.querySelector('.pc-act').click();
-      await wait(300);
-      const box = document.querySelector('.note-modal textarea');
-      if (!box) return { stage: 'no note box' };
+      await wait(400);
+      const box = document.querySelector('.beat-modal textarea');
+      if (!box) return { stage: 'no beat window' };
+      // The window says where the scene lives, which is the thing the card
+      // has no room for.
+      const where = document.querySelector('.beat-modal .bm-where')?.textContent ?? '';
       Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
-        .call(box, 'She reads it twice and says nothing.');
+        .call(box, 'She reads it twice and says nothing, and then she reads it a third time.');
       box.dispatchEvent(new Event('input', { bubbles: true }));
       await wait(150);
-      Array.from(document.querySelectorAll('.note-modal button'))
-        .find(b => b.textContent === 'Save note').click();
-      await wait(900);
+      Array.from(document.querySelectorAll('.beat-modal .actions-row button'))
+        .find(b => b.textContent === 'Save').click();
+      await wait(1000);
       const again = Array.from(document.querySelectorAll('.plot-card'))
         .find(c => c.querySelector('.pc-title')?.textContent === 'THEY FIND THE LETTER');
-      return { stage: 'ok', shown: again?.querySelector('.pc-note')?.textContent ?? null };
+      const note = again?.querySelector('.pc-note');
+      return {
+        stage: 'ok', where,
+        shown: note?.textContent ?? null,
+        // Clamped to a couple of lines on the card; the whole thing is in
+        // the title, and in the window.
+        clamped: note ? note.scrollHeight > note.clientHeight + 1 : null,
+        full: note?.getAttribute('title') ?? null
+      };
     })()`)
 
     check('a note can be put on a beat', noted.stage === 'ok', JSON.stringify(noted))
     check('and shows on the card',
       (noted.shown ?? '').includes('reads it twice'), String(noted.shown))
+    check('the window says where the scene lives',
+      /they_find_the_letter/.test(noted.where ?? '') && /chapter_/.test(noted.where ?? ''),
+      String(noted.where))
+    check('the card keeps the whole note within reach',
+      (noted.full ?? '').includes('a third time'), String(noted.full))
     const outlineAfterNote = JSON.parse(await fs.readFile(outlineFile, 'utf8'))
     check('and is kept with the outline, not the script',
       (outlineAfterNote.beats.find((b) => b.title === 'they_find_the_letter')?.description ?? '')
@@ -3346,6 +3362,41 @@ app.whenReady().then(async () => {
     check('with a body, so the game still loads',
       plannedBody.startsWith('pass'), JSON.stringify(plannedBody.slice(0, 40)))
 
+    const renamed = await js(`(async () => {
+      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const card = Array.from(document.querySelectorAll('.plot-card'))
+        .find(c => c.querySelector('.pc-title')?.textContent === 'THEY FIND THE LETTER');
+      if (!card) return { stage: 'no card' };
+      card.click();
+      await wait(400);
+      const name = document.querySelector('.beat-modal .field input');
+      if (!name) return { stage: 'no name field' };
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        .call(name, 'The letter on the table');
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+      await wait(150);
+      Array.from(document.querySelectorAll('.beat-modal .actions-row button'))
+        .find(b => b.textContent === 'Save').click();
+      await wait(1000);
+      const titles = Array.from(document.querySelectorAll('.pc-title')).map(e => e.textContent);
+      const card2 = Array.from(document.querySelectorAll('.plot-card'))
+        .find(c => c.getAttribute('data-label') === 'they_find_the_letter');
+      return { stage: 'ok', titles, stillLabelled: !!card2 };
+    })()`)
+
+    check('a beat can be renamed from its window', renamed.stage === 'ok',
+      JSON.stringify(renamed).slice(0, 160))
+    check('and the card takes the new name',
+      (renamed.titles ?? []).includes('THE LETTER ON THE TABLE'),
+      JSON.stringify((renamed.titles ?? []).slice(-3)))
+    check('while the label in the script is left alone',
+      renamed.stillLabelled === true, String(renamed.stillLabelled))
+
+    const outlineAfterRename = JSON.parse(await fs.readFile(outlineFile, 'utf8'))
+    check('the new name is kept with the outline',
+      outlineAfterRename.beats.some((b) => b.title === 'The letter on the table'),
+      JSON.stringify(outlineAfterRename.beats.map((b) => b.title).slice(-3)))
+
     // Removing: offered for a beat nobody has written, refused for one in the
     // script, because a card is not a reason to delete a scene.
     const removal = await js(`(async () => {
@@ -3353,7 +3404,7 @@ app.whenReady().then(async () => {
       const cards = Array.from(document.querySelectorAll('.plot-card'));
       const written = cards.find(c => !c.textContent.includes('nothing written yet'));
       const planned = cards.find(c =>
-        c.querySelector('.pc-title')?.textContent === 'THEY FIND THE LETTER');
+        c.querySelector('.pc-title')?.textContent === 'THE LETTER ON THE TABLE');
       const writtenHasRemove = !!written?.querySelector('.pc-act.danger');
       planned.querySelector('.pc-act.danger').click();
       await wait(900);
@@ -3367,7 +3418,7 @@ app.whenReady().then(async () => {
     check('a written beat offers removal too', removal.writtenHasRemove === true,
       String(removal.writtenHasRemove))
     check('an empty one can be removed',
-      !(removal.left ?? []).includes('THEY FIND THE LETTER'),
+      !(removal.left ?? []).includes('THE LETTER ON THE TABLE'),
       JSON.stringify(removal.left) + ' | ' + (removal.error ?? 'no error'))
     const outlineAfterRemove = JSON.parse(await fs.readFile(outlineFile, 'utf8'))
     check('and it left the outline file',
@@ -3630,6 +3681,84 @@ app.whenReady().then(async () => {
       !(done.labels ?? []).includes('ch2_kettle'), JSON.stringify(done.labels))
     check('the file got shorter, not longer', after.length < before.length,
       `${before.length} -> ${after.length}`)
+  }
+
+  console.log('\n[a deleted scene stays deleted]')
+  {
+    // With the file open in the editor, deleting a scene from the board has
+    // to reach that editor too. Otherwise the tab keeps the text from before
+    // and its autosave writes it back a second later -- and the scene comes
+    // back, put there by a tab nobody touched.
+    const chapter = path.join(root, 'game', 'scripts', 'chapter_2.rpy')
+
+    const staged = await js(`(async () => {
+      try {
+      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      // Open the file in the writer, so there is a tab holding its text.
+      Array.from(document.querySelectorAll('.episode-row'))
+        .find(e => e.textContent.includes('chapter_2'))?.click();
+      await wait(1200);
+
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Plot')?.click();
+      await wait(800);
+      const cards = Array.from(document.querySelectorAll('.plot-card'));
+      const target = cards.find(c => c.getAttribute('data-label') === 'ch2_yard');
+      if (!target) return {
+        stage: 'no card',
+        labels: cards.map(c => c.getAttribute('data-label')),
+        cols: document.querySelectorAll('.plot-col').length,
+        modal: !!document.querySelector('.modal-backdrop')
+      };
+
+      target.querySelector('.pc-act.danger').click();
+      await wait(700);
+      const asked = !!document.querySelector('.remove-modal');
+      const go = Array.from(document.querySelectorAll('.remove-modal .actions-row button'))
+        .find(b => b.textContent === 'Remove it');
+      if (asked && !go) {
+        return { stage: 'refused', why: document.querySelector('.remove-modal')?.textContent };
+      }
+      if (go) go.click();
+      await wait(1500);
+
+      // Back to the editor that was holding this file. What it shows now is
+      // the point: a tab still displaying the deleted scene is how somebody
+      // concludes the deletion did not work.
+      Array.from(document.querySelectorAll('.tab'))
+        .find(t => t.textContent.indexOf('chapter_2') !== -1)?.click();
+      await wait(500);
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Code')?.click();
+      await wait(900);
+      const shown = document.querySelector('.cm-content')?.textContent
+        ?? document.querySelector('.writer-page')?.textContent ?? '';
+      return { stage: 'ok', asked, showsDeleted: shown.indexOf('ch2_yard') !== -1 };
+      } catch (e) { return { stage: 'threw', why: String(e && e.message || e) }; }
+    })()`)
+
+    check('the scene was deleted with its file open', staged.stage === 'ok',
+      JSON.stringify(staged).slice(0, 200))
+    // Not a strong check: the code editor only renders the lines on screen,
+    // so a label scrolled out of view is absent from the DOM whether or not
+    // the tab was refreshed. Kept because it costs nothing and would catch
+    // the blatant case.
+    check('and the editor is not obviously showing it',
+      staged.showsDeleted === false,
+      'the open tab still displays the deleted scene')
+
+    const straightAfter = await fs.readFile(chapter, 'utf8')
+    check('it left the script', !straightAfter.includes('label ch2_yard:'),
+      'still there immediately after')
+
+    // Well past the autosave, which is when a stale tab would put it back.
+    await sleep(3000)
+    const later = await fs.readFile(chapter, 'utf8')
+    check('and it is still gone once the editor has had its say',
+      !later.includes('label ch2_yard:'),
+      'the open tab wrote the deleted scene back')
+    check('and nothing else came back with it', later === straightAfter,
+      'the file changed after the deletion settled')
   }
 
   console.log(`\n${pass} passed, ${fail} failed`)
