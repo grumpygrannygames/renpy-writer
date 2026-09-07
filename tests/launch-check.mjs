@@ -57,7 +57,64 @@ const check = (name, ok, detail = '') => {
   }
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+/**
+ * How long a moment is on this machine.
+ *
+ * Everything below gives the interface a moment to catch up before looking at
+ * it. On a build server -- slower, busier, sharing a disk with whatever else
+ * is running -- a moment is not as long as it needs to be, and checks start
+ * failing for reasons that have nothing to do with the code. Rather than tune
+ * each wait by hand, stretch them all there and leave them alone here.
+ */
+const PACE = process.env.CI ? 2 : 1
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms * PACE))
+
+/**
+ * Wait for something to become true in a page, rather than for a number of
+ * milliseconds.
+ *
+ * A fixed wait is a guess about how fast the machine is, and on a slower one
+ * -- a build server, a laptop doing something else -- the guess is wrong. That
+ * is how a suite starts failing once in twenty runs with no change to explain
+ * it, and passing again the moment anybody looks. Waiting for the thing itself
+ * costs nothing when it is already there, and a genuine failure still fails,
+ * just after the deadline instead of before it.
+ */
+const settle = async (contents, expression, ms = 20000) => {
+  const deadline = Date.now() + ms
+  for (;;) {
+    let there = false
+    try {
+      there = await contents.executeJavaScript(`!!(${expression})`)
+    } catch {
+      there = false
+    }
+    if (there) return true
+    if (Date.now() > deadline) return false
+    await sleep(100)
+  }
+}
+
+/**
+ * The same idea inside a probe, where the waiting has to happen between a
+ * click and the answer. Pasted inside the probes that need it, so the
+ * declarations stay in the probe rather than becoming globals the next one
+ * cannot declare again.
+ */
+const UNTIL = `
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
+    const until = async (fn, ms = 15000) => {
+      const deadline = Date.now() + ms;
+      for (;;) {
+        let value = null;
+        try { value = fn(); } catch { value = null; }
+        if (value) return value;
+        if (Date.now() > deadline) return null;
+        await wait(50);
+      }
+    };
+`
 
 /** A disposable Ren'Py project containing copies of real scripts. */
 async function makeFixture() {
@@ -87,7 +144,7 @@ async function makeFixture() {
 }
 
 // A hung page must not hang the suite; fail loudly instead.
-const WATCHDOG_MS = 480000
+const WATCHDOG_MS = 480000 * PACE
 const watchdog = setTimeout(() => {
   console.log(`  FAIL harness timed out after ${WATCHDOG_MS / 1000}s`)
   console.log(`${pass} passed, ${fail + 1} failed`)
@@ -170,7 +227,9 @@ app.whenReady().then(async () => {
 
   await win.loadFile(path.join(out, 'renderer', 'index.html'))
   win.focus()
-  await sleep(1400)
+  await settle(win.webContents, "document.querySelector('.gate-card')")
+  // A moment more: the gate is drawn before the project list arrives.
+  await sleep(600)
 
   console.log('\n[shell]')
   const shell = await js(`(() => ({
@@ -205,7 +264,7 @@ app.whenReady().then(async () => {
       }
     })
     await broken.loadFile(path.join(out, 'renderer', 'index.html'))
-    await sleep(2000)
+    await settle(broken.webContents, "document.querySelector('.gate-card .error')")
     const seen = await broken.webContents.executeJavaScript(`(() => {
       const err = document.querySelector('.gate-card .error');
       const box = err?.getBoundingClientRect();
@@ -386,7 +445,7 @@ app.whenReady().then(async () => {
   // shape a browser build would fill with HTTP calls. If any component reached
   // for window.api directly, the real registry would show through instead.
   const foreign = await js(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
     if (!window.renpyWriter) return { stage: 'no host hook' };
 
     const calls = [];
@@ -1597,7 +1656,7 @@ app.whenReady().then(async () => {
     (settingsSet.unsetError ?? '').includes('No render folder'), String(settingsSet.unsetError))
 
   const panel = await js(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
     const openMenu = async () => {
       document.querySelector('.episode-row').dispatchEvent(new MouseEvent('contextmenu', {
         bubbles: true, clientX: 200, clientY: 200
@@ -1705,7 +1764,7 @@ app.whenReady().then(async () => {
     (noEncoder.error ?? '').includes('definitely-not-ffmpeg-xyz'), String(noEncoder.error))
 
   const blocked = await js(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
     document.querySelector('.episode-row').dispatchEvent(new MouseEvent('contextmenu', {
       bubbles: true, clientX: 200, clientY: 200
     }));
@@ -1907,7 +1966,7 @@ app.whenReady().then(async () => {
   )
 
   const subs = await js(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
     document.querySelector('.episode-row').dispatchEvent(new MouseEvent('contextmenu', {
       bubbles: true, clientX: 200, clientY: 200
     }));
@@ -2122,7 +2181,7 @@ app.whenReady().then(async () => {
 
     const openPanel = async () => {
       await js(`(async () => {
-        const wait = (ms) => new Promise(r => setTimeout(r, ms));
+        const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
         Array.from(document.querySelectorAll('.mode-switch button'))
           .find(b => b.textContent === 'Sync').click();
         await wait(1200);
@@ -2184,7 +2243,7 @@ app.whenReady().then(async () => {
 
     // Save everything, which should reach the remote.
     const saved = await js(`(async () => {
-      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
       const input = document.querySelector('.sync-modal .field input');
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
         .call(input, 'Sidecar and notes');
@@ -2229,7 +2288,7 @@ app.whenReady().then(async () => {
     await gitRun(other, ['push'])
 
     const brought = await js(`(async () => {
-      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
       Array.from(document.querySelectorAll('.sync-modal button'))
         .find(b => b.textContent.indexOf('Bring in') !== -1).click();
       await wait(4000);
@@ -2250,7 +2309,7 @@ app.whenReady().then(async () => {
     await fs.copyFile(path.join(renderSrc, copied[0]), newRender)
 
     const savedRenders = await js(`(async () => {
-      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
       document.querySelector('.episode-row').dispatchEvent(new MouseEvent('contextmenu', {
         bubbles: true, clientX: 200, clientY: 200
       }));
@@ -2452,7 +2511,9 @@ app.whenReady().then(async () => {
     if (event.level === 'error') webProblems.push(event.message)
   })
   await web.loadURL(`http://127.0.0.1:${running.port}/`)
-  await sleep(2000)
+  // Served over HTTP and asked to sign in: both take a round trip, and on a
+  // slow machine they used to take longer than the wait that stood here.
+  await settle(web.webContents, "document.querySelector('.gate-card input[type=password]')")
 
   const webJs = async (code) => {
     try {
@@ -2482,8 +2543,7 @@ app.whenReady().then(async () => {
     String(bootstrapped.projects))
 
   // Sign in through the form, the way a person on a phone would.
-  const signIn = await webJs(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  const signIn = await webJs(`(async () => {${UNTIL}
     const set = (el, value) => {
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
         .call(el, value);
@@ -2495,7 +2555,10 @@ app.whenReady().then(async () => {
     await wait(200);
 
     document.querySelector('.gate-card button.primary').click();
-    await wait(2500);
+    // Signed in when the password field is gone, and the list is the next
+    // thing to arrive.
+    await until(() => !document.querySelector('input[type=password]'));
+    await until(() => document.querySelectorAll('.project-item .name').length > 0);
     return {
       stillAsking: !!document.querySelector('input[type=password]'),
       heading: document.querySelector('.gate-card h1')?.textContent ?? null,
@@ -2515,9 +2578,8 @@ app.whenReady().then(async () => {
   // comes back.
   await webJs(`fetch('/auth/logout', { method: 'POST', credentials: 'same-origin' })`)
   await web.reload()
-  await sleep(2500)
-  const rejected = await webJs(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  await settle(web.webContents, "document.querySelectorAll('.gate-card input').length >= 2")
+  const rejected = await webJs(`(async () => {${UNTIL}
     const set = (el, value) => {
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
         .call(el, value);
@@ -2529,7 +2591,7 @@ app.whenReady().then(async () => {
     set(fields[1], 'the wrong password');
     await wait(200);
     document.querySelector('.gate-card button.primary').click();
-    await wait(2000);
+    await until(() => document.querySelector('.gate-card .error'));
     return {
       stage: 'ok',
       error: document.querySelector('.gate-card .error')?.textContent ?? null,
@@ -2542,8 +2604,7 @@ app.whenReady().then(async () => {
     String(rejected.stillAsking))
 
   // Back in, for everything below.
-  await webJs(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  await webJs(`(async () => {${UNTIL}
     const set = (el, value) => {
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
         .call(el, value);
@@ -2554,8 +2615,10 @@ app.whenReady().then(async () => {
     set(fields[1], 'a long enough password');
     await wait(200);
     document.querySelector('.gate-card button.primary').click();
-    await wait(2500);
+    await until(() => !document.querySelector('input[type=password]'));
   })()`)
+  // Nothing below this line works until the connection is signed in.
+  await settle(web.webContents, "!document.querySelector('input[type=password]')")
 
   const overHttp = await webJs(`(async () => {
     const call = (name, ...args) => window.renpyWriter.currentApi()[name](...args);
@@ -2607,7 +2670,7 @@ app.whenReady().then(async () => {
   // The gate drew before the server knew about any project, and it has no
   // reason to poll. Reload the page the way a person would.
   await web.reload()
-  await sleep(2500)
+  await settle(web.webContents, "document.querySelector('.project-item .name')")
 
   // A whole screen drawn from data that only came over HTTP.
   const drawn = await webJs(`(async () => {
@@ -2634,7 +2697,7 @@ app.whenReady().then(async () => {
   // folder, no encoder and no artwork, so those features are absent rather
   // than present-and-explaining.
   const webMenu = await webJs(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
     const caps = await window.renpyWriter.currentApi().capabilities();
     const row = document.querySelector('.episode-row');
     if (!row) return { caps, labels: null };
@@ -2690,7 +2753,7 @@ app.whenReady().then(async () => {
   const scriptPath = path.join(root, 'game', 'scripts', 'chapter_2.rpy')
   const beforeHide = await fs.readFile(scriptPath, 'utf8')
   const hidden = await webJs(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
     const episode = Array.from(document.querySelectorAll('.episode-row'))
       .find(r => r.textContent.indexOf('chapter_2') !== -1);
     if (!episode) return { stage: 'no episode' };
@@ -2732,7 +2795,7 @@ app.whenReady().then(async () => {
   // Coming back, another client's change is picked up.
   await fs.writeFile(scriptPath, afterHide + String.fromCharCode(10) + '# FROM ELSEWHERE' + String.fromCharCode(10), 'utf8')
   const returned = await webJs(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));
     await wait(3000);
@@ -2878,7 +2941,7 @@ app.whenReady().then(async () => {
     (await gitRun(root, ['fetch', '--quiet'])) === 0, 'fetch failed')
 
   const clashAsked = await webJs(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
     const sync = Array.from(document.querySelectorAll('.mode-switch button'))
       .find(b => b.textContent === 'Sync');
     if (!sync) return { stage: 'no sync button' };
@@ -2942,7 +3005,7 @@ app.whenReady().then(async () => {
   console.log('  screenshot: ' + path.join(clashShots, 'conflict.png'))
 
   const clashAnswered = await webJs(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
     document.querySelectorAll('.cf-side')[0].click();
     await wait(300);
     const apply = Array.from(document.querySelectorAll('.conflict-modal .actions-row button'))
@@ -2997,7 +3060,7 @@ app.whenReady().then(async () => {
     'label proofread_pass:' + NL)
 
   const refused = await webJs(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
     const sync = Array.from(document.querySelectorAll('.mode-switch button'))
       .find(b => b.textContent === 'Sync');
     if (!sync) return { stage: 'no sync button' };
@@ -3085,7 +3148,7 @@ app.whenReady().then(async () => {
   web.setContentSize(390, 844)
   await sleep(1200)
   const onAPhone = await webJs(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
     const visible = (sel) => {
       const el = document.querySelector(sel);
       return !!el && getComputedStyle(el).display !== 'none';
@@ -3173,7 +3236,7 @@ app.whenReady().then(async () => {
   // Changing a line's element was reachable only by pressing Tab, which a
   // phone does not have. This is that capability, by name.
   const elements = await webJs(`(async () => {
-    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
     document.querySelectorAll('.pn-tab')[1].click();
     await wait(900);
     const w = Array.from(document.querySelectorAll('.mode-switch button'))
@@ -3259,7 +3322,7 @@ app.whenReady().then(async () => {
     const outlineFile = path.join(root, '.renpywriter', 'outline.json')
 
     const added = await js(`(async () => {
-      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
       Array.from(document.querySelectorAll('.mode-switch button'))
         .find(b => b.textContent === 'Plot')?.click();
       await wait(700);
@@ -3308,7 +3371,7 @@ app.whenReady().then(async () => {
 
     // A note on the beat, which is the point of planning one before writing.
     const noted = await js(`(async () => {
-      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
       const card = Array.from(document.querySelectorAll('.plot-card'))
         .find(c => c.querySelector('.pc-title')?.textContent === 'THEY FIND THE LETTER');
       if (!card) return { stage: 'no card' };
@@ -3363,7 +3426,7 @@ app.whenReady().then(async () => {
       plannedBody.startsWith('pass'), JSON.stringify(plannedBody.slice(0, 40)))
 
     const renamed = await js(`(async () => {
-      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
       const card = Array.from(document.querySelectorAll('.plot-card'))
         .find(c => c.querySelector('.pc-title')?.textContent === 'THEY FIND THE LETTER');
       if (!card) return { stage: 'no card' };
@@ -3400,7 +3463,7 @@ app.whenReady().then(async () => {
     // Removing: offered for a beat nobody has written, refused for one in the
     // script, because a card is not a reason to delete a scene.
     const removal = await js(`(async () => {
-      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
       const cards = Array.from(document.querySelectorAll('.plot-card'));
       const written = cards.find(c => !c.textContent.includes('nothing written yet'));
       const planned = cards.find(c =>
@@ -3547,7 +3610,7 @@ app.whenReady().then(async () => {
     const before = JSON.parse(await fs.readFile(profileFile, 'utf8'))
 
     const cycled = await js(`(async () => {
-      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
       const pick = (sel, text) => Array.from(document.querySelectorAll(sel))
         .find(e => (e.textContent || '').trim() === text);
 
@@ -3620,7 +3683,7 @@ app.whenReady().then(async () => {
     const before = await fs.readFile(chapter, 'utf8')
 
     const asked = await js(`(async () => {
-      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
       Array.from(document.querySelectorAll('.mode-switch button'))
         .find(b => b.textContent === 'Plot')?.click();
       await wait(800);
@@ -3656,7 +3719,7 @@ app.whenReady().then(async () => {
       'the script changed before anybody agreed')
 
     const done = await js(`(async () => {
-      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
       Array.from(document.querySelectorAll('.remove-modal .actions-row button'))
         .find(b => b.textContent === 'Remove it').click();
       await wait(1500);
@@ -3693,7 +3756,7 @@ app.whenReady().then(async () => {
 
     const staged = await js(`(async () => {
       try {
-      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+      const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
       // Open the file in the writer, so there is a tab holding its text.
       Array.from(document.querySelectorAll('.episode-row'))
         .find(e => e.textContent.includes('chapter_2'))?.click();
