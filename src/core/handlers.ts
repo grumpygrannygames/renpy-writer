@@ -511,10 +511,14 @@ export function registerHandlers(register: Register, host: HostServices): void {
   /**
    * A Ren'Py label: letters, digits and underscores, never starting with a
    * digit. Anything else in the name a person typed becomes an underscore.
+   *
+   * Upper case, because that is how labels are written by hand -- they are
+   * signposts in a file of prose, and a new one should not be the odd one
+   * out in a script full of THEY_FIND_THE_LETTER.
    */
   const toLabelName = (name: string): string => {
-    const slug = toFileSlug(name)
-    return /^[0-9]/.test(slug) ? `beat_${slug}` : slug || 'new_beat'
+    const slug = toFileSlug(name).toUpperCase()
+    return /^[0-9]/.test(slug) ? `BEAT_${slug}` : slug || 'NEW_BEAT'
   }
 
   register(IPC.createBeat, async (root: string, episodeId: string, title: string) => {
@@ -544,9 +548,12 @@ export function registerHandlers(register: Register, host: HostServices): void {
       }
     }
 
+    // Compared without case. Ren'Py would allow FOO and foo side by side,
+    // being case-sensitive, but nobody reading the script would thank us.
+    const lowered = new Set([...taken].map((name) => name.toLowerCase()))
     const base = toLabelName(named)
     let label = base
-    for (let n = 2; taken.has(label); n++) label = `${base}_${n}`
+    for (let n = 2; lowered.has(label.toLowerCase()); n++) label = `${base}_${n}`
 
     // The label is written into the script, not just the outline. A beat that
     // exists only in the outline opens into a script with nothing of it

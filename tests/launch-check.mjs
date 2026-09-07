@@ -3301,10 +3301,10 @@ app.whenReady().then(async () => {
       JSON.stringify((added.titlesBefore ?? []).slice(0, 3)))
 
     const outlineAfterAdd = JSON.parse(await fs.readFile(outlineFile, 'utf8'))
-    const planned = outlineAfterAdd.beats.find((b) => b.title === 'they_find_the_letter')
+    const planned = outlineAfterAdd.beats.find((b) => b.title === 'THEY_FIND_THE_LETTER')
     check('it reached the outline file', !!planned, JSON.stringify(outlineAfterAdd.beats.length))
-    check('and is a real label, so it can be opened and typed into',
-      planned?.label === 'they_find_the_letter', JSON.stringify(planned))
+    check('the name typed in lower case becomes an upper-case label',
+      planned?.label === 'THEY_FIND_THE_LETTER', JSON.stringify(planned))
 
     // A note on the beat, which is the point of planning one before writing.
     const noted = await js(`(async () => {
@@ -3343,21 +3343,21 @@ app.whenReady().then(async () => {
     check('and shows on the card',
       (noted.shown ?? '').includes('reads it twice'), String(noted.shown))
     check('the window says where the scene lives',
-      /they_find_the_letter/.test(noted.where ?? '') && /chapter_/.test(noted.where ?? ''),
+      /THEY_FIND_THE_LETTER/.test(noted.where ?? '') && /chapter_/.test(noted.where ?? ''),
       String(noted.where))
     check('the card keeps the whole note within reach',
       (noted.full ?? '').includes('a third time'), String(noted.full))
     const outlineAfterNote = JSON.parse(await fs.readFile(outlineFile, 'utf8'))
     check('and is kept with the outline, not the script',
-      (outlineAfterNote.beats.find((b) => b.title === 'they_find_the_letter')?.description ?? '')
+      (outlineAfterNote.beats.find((b) => b.title === 'THEY_FIND_THE_LETTER')?.description ?? '')
         .includes('reads it twice'),
-      JSON.stringify(outlineAfterNote.beats.find((b) => b.title === 'they_find_the_letter')))
+      JSON.stringify(outlineAfterNote.beats.find((b) => b.title === 'THEY_FIND_THE_LETTER')))
 
     const scriptStillThere = await fs.readFile(
       path.join(root, 'game', 'scripts', 'chapter_2.rpy'), 'utf8')
-    const plannedBody = (scriptStillThere.split('label they_find_the_letter:')[1] ?? '').trim()
+    const plannedBody = (scriptStillThere.split('label THEY_FIND_THE_LETTER:')[1] ?? '').trim()
     check("the label is in the script, so it can be opened and typed into",
-      scriptStillThere.includes('label they_find_the_letter:'),
+      scriptStillThere.includes('label THEY_FIND_THE_LETTER:'),
       scriptStillThere.slice(-120))
     check('with a body, so the game still loads',
       plannedBody.startsWith('pass'), JSON.stringify(plannedBody.slice(0, 40)))
@@ -3380,7 +3380,7 @@ app.whenReady().then(async () => {
       await wait(1000);
       const titles = Array.from(document.querySelectorAll('.pc-title')).map(e => e.textContent);
       const card2 = Array.from(document.querySelectorAll('.plot-card'))
-        .find(c => c.getAttribute('data-label') === 'they_find_the_letter');
+        .find(c => c.getAttribute('data-label') === 'THEY_FIND_THE_LETTER');
       return { stage: 'ok', titles, stillLabelled: !!card2 };
     })()`)
 
@@ -3422,7 +3422,7 @@ app.whenReady().then(async () => {
       JSON.stringify(removal.left) + ' | ' + (removal.error ?? 'no error'))
     const outlineAfterRemove = JSON.parse(await fs.readFile(outlineFile, 'utf8'))
     check('and it left the outline file',
-      !outlineAfterRemove.beats.some((b) => b.title === 'they_find_the_letter'),
+      !outlineAfterRemove.beats.some((b) => b.title === 'THEY_FIND_THE_LETTER'),
       String(outlineAfterRemove.beats.length))
   }
 
