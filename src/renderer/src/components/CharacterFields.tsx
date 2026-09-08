@@ -26,12 +26,7 @@ interface FieldSpec {
 }
 
 export const CHARACTER_FIELDS: FieldSpec[] = [
-  {
-    key: 'fullName',
-    label: 'Full name',
-    placeholder: 'e.g. James Cook',
-    hint: 'Yours to know. The script goes on calling them whatever it calls them.'
-  },
+  { key: 'fullName', label: 'Full name', placeholder: 'e.g. James Cook' },
   { key: 'birthday', label: 'Birthday', placeholder: 'e.g. December 6' },
   { key: 'age', label: 'Age' },
   {
@@ -66,7 +61,7 @@ export default function CharacterFields({ note, linkIndex, onFollow, onChange, l
         linkIndex={linkIndex}
         onFollow={onFollow}
         onChange={(v) => set({ name: v.trim() || note.name })}
-        hint="The name used in your notes. Script display names are set per variable below."
+        hint="The name used in your notes. Script display names are set at the bottom of the page."
       />
 
       {CHARACTER_FIELDS.map((f) => (

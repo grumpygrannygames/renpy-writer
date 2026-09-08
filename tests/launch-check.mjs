@@ -166,6 +166,12 @@ async function makeFixture() {
 }
 
 // A hung page must not hang the suite; fail loudly instead.
+/**
+ * Whether this run may take the keyboard away from whoever is using the
+ * machine. True on a build server, where there is nobody to take it from.
+ */
+const MAY_TAKE_FOCUS = process.env.CI === 'true' || process.env.RPW_E2E_FOCUS === '1'
+
 const WATCHDOG_MS = 900000 * PACE
 const watchdog = setTimeout(() => {
   console.log(`  FAIL harness timed out after ${WATCHDOG_MS / 1000}s`)
@@ -1543,86 +1549,97 @@ app.whenReady().then(async () => {
       focusedInField: !!document.activeElement?.closest?.('.chareditor .ref-field')
     }))()`)
 
-  // Typing through sendInputEvent only reaches the page while the window holds
-  // OS focus, and focus does not survive the reloads earlier in this run. Claim
-  // it back, and assert it, so a focus loss fails here with a reason rather
-  // than downstream as an edit that silently did nothing.
-  // Windows will not always hand the foreground to a process that is not
-  // already in it, so ask more than once and in more than one way rather than
-  // assuming a single call worked.
-  let focused = false
-  for (let attempt = 0; attempt < 5 && !focused; attempt++) {
-    win.showInactive()
-    win.moveTop()
-    win.focus()
-    win.focusOnWebView()
-    win.webContents.focus()
-    await sleep(400)
-    focused = await js(`document.hasFocus()`)
+  /**
+   * The one stretch that needs the foreground.
+   *
+   * Real key events go to whichever window the desktop says is in front, so
+   * these checks cannot be made without taking it -- and taking it means
+   * interrupting whoever is at the machine, for a suite that runs for eight
+   * minutes. Nobody runs that while doing anything else, so it is off unless
+   * asked for: on a build server, where there is nobody to interrupt, and by
+   * hand with RPW_E2E_FOCUS=1.
+   */
+  if (!MAY_TAKE_FOCUS) {
+    console.log('  -- skipped: real typing needs the foreground (RPW_E2E_FOCUS=1 to run it)')
+  } else {
+    // Typing through sendInputEvent only reaches the page while the window holds
+    // OS focus, and focus does not survive the reloads earlier in this run. Claim
+    // it back, and assert it, so a focus loss fails here with a reason rather
+    // than downstream as an edit that silently did nothing.
+    // Windows will not always hand the foreground to a process that is not
+    // already in it, so ask more than once and in more than one way rather than
+    // assuming a single call worked.
+    let focused = false
+    for (let attempt = 0; attempt < 5 && !focused; attempt++) {
+      win.showInactive()
+      win.moveTop()
+      win.focus()
+      win.focusOnWebView()
+      win.webContents.focus()
+      await sleep(400)
+      focused = await js(`document.hasFocus()`)
+    }
+    check('the window has keyboard focus for the typing checks', focused === true,
+      'the desktop would not give this window the foreground, so keystrokes go nowhere')
+
+    const pressed = await (async () => {
+      const onCharacterTab = await js(`(async () => {
+        const t = Array.from(document.querySelectorAll('.tab')).find(x => x.textContent.indexOf('Ben') !== -1);
+        if (!t) return false;
+        t.click();
+        await new Promise(r => setTimeout(r, 500));
+        return !!document.querySelector('.chareditor');
+      })()`)
+      if (!onCharacterTab) return { stage: 'no character tab' }
+
+      const at = await fieldPoint('Age')
+      if (!at) return { stage: 'no Age field' }
+      await realClick(at.x, at.y)
+      const afterPress = await editorState()
+
+      // The failure mode was open-then-shut within a frame; look again later.
+      await sleep(500)
+      const stillOpen = await editorState()
+
+      await typeText('31')
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' })
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
+      // Reference material saves on the same 1200ms debounce as scripts.
+      await sleep(2000)
+
+      const committed = await js(`(() => {
+        const f = Array.from(document.querySelectorAll('.chareditor .ref-field'))
+          .find(el => el.querySelector('.rf-label')?.textContent === 'Age');
+        return f?.querySelector('.rf-view')?.textContent ?? null;
+      })()`)
+      const stored = await js(`window.api.readReference(${JSON.stringify(root)})`)
+
+      // A second field takes over cleanly rather than stacking up.
+      const second = await fieldPoint('Birthday')
+      if (second) await realClick(second.x, second.y)
+      const afterSecond = await editorState()
+
+      return { stage: 'ok', afterPress, stillOpen, committed, stored, afterSecond }
+    })()
+
+    check('a real press opens the field', pressed.afterPress?.open === 1,
+      pressed.stage + ' ' + JSON.stringify(pressed.afterPress))
+    check('the press leaves focus in the field', pressed.afterPress?.focusedInField === true,
+      JSON.stringify(pressed.afterPress))
+    check('the field is still open a moment later', pressed.stillOpen?.open === 1,
+      JSON.stringify(pressed.stillOpen))
+    check('typed text commits to the view', pressed.committed === '31', String(pressed.committed))
+    check('and reaches the sidecar file',
+      (pressed.stored?.characters ?? []).some(c => c.name === 'Ben' && c.age === '31'),
+      JSON.stringify((pressed.stored?.characters ?? []).map(c => c.name + ':' + (c.age ?? ''))))
+    check('pressing a second field hands the editor over',
+      pressed.afterSecond?.open === 1, JSON.stringify(pressed.afterSecond))
+    check('editing never leaves the character', pressed.afterSecond?.heading === 'Ben',
+      String(pressed.afterSecond?.heading))
+
+    // Hand the keyboard back the moment it is no longer needed.
+    win.blur()
   }
-  check('the window has keyboard focus for the typing checks', focused === true,
-    'the desktop would not give this window the foreground, so keystrokes go nowhere')
-
-  const pressed = await (async () => {
-    const onCharacterTab = await js(`(async () => {
-      const t = Array.from(document.querySelectorAll('.tab')).find(x => x.textContent.indexOf('Ben') !== -1);
-      if (!t) return false;
-      t.click();
-      await new Promise(r => setTimeout(r, 500));
-      return !!document.querySelector('.chareditor');
-    })()`)
-    if (!onCharacterTab) return { stage: 'no character tab' }
-
-    const at = await fieldPoint('Age')
-    if (!at) return { stage: 'no Age field' }
-    await realClick(at.x, at.y)
-    const afterPress = await editorState()
-
-    // The failure mode was open-then-shut within a frame; look again later.
-    await sleep(500)
-    const stillOpen = await editorState()
-
-    await typeText('31')
-    win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' })
-    win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' })
-    // Reference material saves on the same 1200ms debounce as scripts.
-    await sleep(2000)
-
-    const committed = await js(`(() => {
-      const f = Array.from(document.querySelectorAll('.chareditor .ref-field'))
-        .find(el => el.querySelector('.rf-label')?.textContent === 'Age');
-      return f?.querySelector('.rf-view')?.textContent ?? null;
-    })()`)
-    const stored = await js(`window.api.readReference(${JSON.stringify(root)})`)
-
-    // A second field takes over cleanly rather than stacking up.
-    const second = await fieldPoint('Birthday')
-    if (second) await realClick(second.x, second.y)
-    const afterSecond = await editorState()
-
-    return { stage: 'ok', afterPress, stillOpen, committed, stored, afterSecond }
-  })()
-
-  check('a real press opens the field', pressed.afterPress?.open === 1,
-    pressed.stage + ' ' + JSON.stringify(pressed.afterPress))
-  check('the press leaves focus in the field', pressed.afterPress?.focusedInField === true,
-    JSON.stringify(pressed.afterPress))
-  check('the field is still open a moment later', pressed.stillOpen?.open === 1,
-    JSON.stringify(pressed.stillOpen))
-  check('typed text commits to the view', pressed.committed === '31', String(pressed.committed))
-  check('and reaches the sidecar file',
-    (pressed.stored?.characters ?? []).some(c => c.name === 'Ben' && c.age === '31'),
-    JSON.stringify((pressed.stored?.characters ?? []).map(c => c.name + ':' + (c.age ?? ''))))
-  check('pressing a second field hands the editor over',
-    pressed.afterSecond?.open === 1, JSON.stringify(pressed.afterSecond))
-  check('editing never leaves the character', pressed.afterSecond?.heading === 'Ben',
-    String(pressed.afterSecond?.heading))
-
-  // Hand the keyboard back. That section is the only one that needs the
-  // foreground -- real key events go to whichever window the desktop says is
-  // in front -- and a suite that keeps it for the remaining several minutes is
-  // one nobody can run while doing anything else.
-  win.blur()
 
   console.log('\n[image hover in the code view]')
   const hover = await js(`(async () => {
@@ -4315,7 +4332,10 @@ app.whenReady().then(async () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
       // Escape rather than Enter: named, and left for later.
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-      input.blur();
+      // The window is never given focus, and element.blur() does nothing in a
+      // document that does not have it. focusout is what a real click away
+      // produces, and it is what React listens for.
+      input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
       await wait(700);
 
       const heading = named('WHAT_SHE_DOES_NEXT');
@@ -4383,7 +4403,7 @@ app.whenReady().then(async () => {
 
     // --- and a scene can go ------------------------------------------------
     const removed = await js(`(async () => {${UNTIL}
-      document.activeElement?.blur();
+      document.activeElement?.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
       await wait(400);
       const row = Array.from(document.querySelectorAll('.blk-label'))
         .find(el => el.querySelector('.blk-label-name')?.textContent === 'WHAT_SHE_DOES_NEXT');
