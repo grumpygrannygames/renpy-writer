@@ -4653,6 +4653,105 @@ app.whenReady().then(async () => {
       'the file changed after the deletion settled')
   }
 
+  console.log('\n[an action that will not happen says why]')
+  {
+    /*
+     * An empty beat is removed without asking -- there is nothing in it to
+     * lose. But an empty beat can still be jumped to from another file, and
+     * then the removal is refused. That refusal reached the store and stopped
+     * there: the card simply stayed where it was, and the only way to find out
+     * why was to read the source.
+     */
+    const arranged = await js(`(async () => {${UNTIL}
+      const root = ${JSON.stringify(root)};
+      const opened = await window.api.openProject(root);
+      const episode = opened.episodes.find(e => e.fileName === 'chapter_1.rpy');
+      const other = opened.episodes.find(e => e.fileName === 'chapter_2.rpy');
+      if (!episode || !other) return { stage: 'missing an episode' };
+
+      // A scene nobody has written yet, in one file.
+      await window.api.createBeat(root, episode.id, 'a scene spoken for');
+      const withBeat = await window.api.openProject(root);
+      const planned = withBeat.beats.find(b => b.title === 'A_SCENE_SPOKEN_FOR');
+      if (!planned?.label) return { stage: 'the beat was not made' };
+
+      // And something in the other file that jumps to it, from inside a
+      // menu, which is a branch rather than bookkeeping.
+      const text = await window.api.readEpisode(root, 'chapter_2.rpy');
+      await window.api.writeEpisode(root, 'chapter_2.rpy', text +
+        String.fromCharCode(10) + 'label SENDS_THEM_ON:' +
+        String.fromCharCode(10) + '    menu:' +
+        String.fromCharCode(10) + '        "Go":' +
+        String.fromCharCode(10) + '            jump ' + planned.label +
+        String.fromCharCode(10) + '        "Stay":' +
+        String.fromCharCode(10) + '            return' + String.fromCharCode(10));
+      return { stage: 'ok', label: planned.label, id: planned.id };
+    })()`)
+    check('a scene can be planned and then spoken for', arranged.stage === 'ok',
+      JSON.stringify(arranged))
+
+    // Those went straight to the files. The board draws what the app is
+    // holding, so it has to read them again before any of this is on screen.
+    await win.webContents.reload()
+    await settle(win.webContents, "document.querySelector('.project-item')")
+    await js(`document.querySelector('.project-item')?.click()`)
+    await settle(win.webContents, "document.querySelector('.episode-row')")
+    await sleep(600)
+
+    const refused = await js(`(async () => {${UNTIL}
+      const root = ${JSON.stringify(root)};
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Plot')?.click();
+      const card = await until(() => Array.from(document.querySelectorAll('.plot-card'))
+        .find(c => c.getAttribute('data-label') === ${JSON.stringify('A_SCENE_SPOKEN_FOR')}));
+      if (!card) {
+        return { stage: 'no card',
+                 labels: Array.from(document.querySelectorAll('.plot-card'))
+                   .map(c => c.getAttribute('data-label')).slice(0, 8) };
+      }
+
+      // Nothing written in it, so this is the path that removes without asking.
+      card.querySelector('.pc-act.danger').click();
+      await wait(2500);
+
+      return {
+        stage: 'ok',
+        stillThere: !!Array.from(document.querySelectorAll('.plot-card'))
+          .find(c => c.getAttribute('data-label') === 'A_SCENE_SPOKEN_FOR'),
+        said: document.querySelector('.app-error .ae-text')?.textContent ?? null
+      };
+    })()`)
+
+    check('the removal is refused', refused.stage === 'ok' && refused.stillThere === true,
+      JSON.stringify(refused).slice(0, 200))
+    check('and the app says so rather than doing nothing quietly',
+      typeof refused.said === 'string' && refused.said.length > 0, String(refused.said))
+    check('naming what is in the way',
+      /SENDS_THEM_ON/.test(refused.said ?? ''), String(refused.said))
+    check('and what to do about it',
+      /jump|going nowhere/i.test(refused.said ?? ''), String(refused.said))
+
+    // A message nobody can read is the same as no message.
+    await shoot(win.webContents, 'refusal.png')
+
+    const dismissed = await js(`(async () => {${UNTIL}
+      document.querySelector('.app-error .ae-dismiss')?.click();
+      await wait(400);
+      return { gone: !document.querySelector('.app-error') };
+    })()`)
+    check('and it can be put away once it has been read', dismissed.gone === true,
+      JSON.stringify(dismissed))
+
+    // Leave the fixture as it was found.
+    await js(`(async () => {
+      const root = ${JSON.stringify(root)};
+      const text = await window.api.readEpisode(root, 'chapter_2.rpy');
+      const at = text.indexOf('label SENDS_THEM_ON:');
+      if (at !== -1) await window.api.writeEpisode(root, 'chapter_2.rpy', text.slice(0, at));
+    })()`)
+    await sleep(600)
+  }
+
   console.log('\n[a linear episode after a reorder]')
   {
     /*

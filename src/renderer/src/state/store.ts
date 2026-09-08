@@ -161,6 +161,9 @@ interface AppState {
   setActiveTab: (key: string) => void
   setMode: (mode: EditorMode) => void
   setAnchorLine: (fileName: string, line: number) => void
+  /** Say why something did not happen. Shown until it is dismissed. */
+  reportError: (message: string) => void
+  dismissError: () => void
 
   upsertCharacterNote: (note: CharacterNote) => void
   renameScriptCharacter: (varName: string, newName: string) => Promise<string | null>
@@ -589,6 +592,9 @@ export const useStore = create<AppState>((set, get) => ({
 
   setActiveTab: (key) => set({ activeTab: key }),
   setMode: (mode) => set({ mode }),
+
+  reportError: (message) => set({ error: message }),
+  dismissError: () => set({ error: null }),
 
   setAnchorLine: (fileName, line) =>
     set((s) => (s.anchorLines[fileName] === line

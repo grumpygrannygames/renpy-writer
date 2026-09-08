@@ -785,6 +785,52 @@ label.check input {
   font-size: 11px;
 }
 
+/* ---------------------------------------------------------------- refusals */
+
+/*
+ * Why something did not happen.
+ *
+ * Over the app rather than inside any one panel, because the actions that get
+ * refused are spread across all of them, and because a message tucked into a
+ * corner of a view somebody has already navigated away from is no message.
+ */
+.app-error {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  z-index: 200;
+  max-width: min(720px, calc(100vw - 48px));
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 11px 14px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+.ae-text {
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.ae-dismiss {
+  flex: none;
+  margin-left: auto;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 16px;
+  line-height: 1.2;
+}
+.ae-dismiss:hover {
+  color: var(--text);
+  background: transparent;
+}
+
 /* ---------------------------------------------------------------- finding */
 
 /*

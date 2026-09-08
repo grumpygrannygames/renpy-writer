@@ -40,6 +40,9 @@ export default function App() {
   const setAnchorLine = useStore((s) => s.setAnchorLine)
   const flushPendingSaves = useStore((s) => s.flushPendingSaves)
   const planRemoveBeat = useStore((s) => s.planRemoveBeat)
+  const error = useStore((s) => s.error)
+  const dismissError = useStore((s) => s.dismissError)
+  const reportError = useStore((s) => s.reportError)
   const refreshOpenTabs = useStore((s) => s.refreshOpenTabs)
 
   const [showNewEpisode, setShowNewEpisode] = useState(false)
@@ -152,7 +155,13 @@ export default function App() {
     if (!beat) return
     await flushPendingSaves()
     const plan = await planRemoveBeat(beat.id)
-    if (plan) setRemovingBeat({ id: beat.id, title: beat.title, plan })
+    // A plan that could not be made is not a reason to do nothing quietly.
+    if (!plan) return
+    if (plan.error) {
+      reportError(plan.error)
+      return
+    }
+    setRemovingBeat({ id: beat.id, title: beat.title, plan })
   }
 
   /** Ctrl+click on a character cue opens them in the reference panel. */
@@ -384,6 +393,23 @@ export default function App() {
 
       {renderEpisode && (
         <RenderSyncPanel episode={renderEpisode} onClose={() => setRenderEpisodeId(null)} />
+      )}
+
+      {/*
+        * Anything that refused to happen, and why.
+        *
+        * Every action here reports its refusal to the store, and for a long
+        * while nothing displayed it: a beat that could not be removed simply
+        * did not move, and the only way to find out why was to read the
+        * source. An action that does nothing has to say so.
+        */}
+      {error && (
+        <div className="app-error" role="alert">
+          <span className="ae-text">{error}</span>
+          <button className="ae-dismiss" onClick={dismissError} title="Dismiss">
+            &times;
+          </button>
+        </div>
       )}
 
       {removingBeat && (

@@ -37,6 +37,7 @@ export default function PlotBoard() {
   const reorderEpisodes = useStore((s) => s.reorderEpisodes)
   const setEpisodeStatus = useStore((s) => s.setEpisodeStatus)
   const openEpisode = useStore((s) => s.openEpisode)
+  const reportError = useStore((s) => s.reportError)
   const lastMove = useStore((s) => s.lastMove)
   const clearLastMove = useStore((s) => s.clearLastMove)
   const createBeat = useStore((s) => s.createBeat)
@@ -281,7 +282,9 @@ export default function PlotBoard() {
                                 return
                               }
                               void planRemoveBeat(beat.id).then((plan) => {
-                                if (plan) setRemoving({ id: beat.id, title: beat.title, plan })
+                                if (!plan) return
+                                if (plan.error) return reportError(plan.error)
+                                setRemoving({ id: beat.id, title: beat.title, plan })
                               })
                             }}
                           >
@@ -394,7 +397,9 @@ export default function PlotBoard() {
                     return
                   }
                   void planRemoveBeat(beat.id).then((plan) => {
-                    if (plan) setRemoving({ id: beat.id, title: beat.title, plan })
+                    if (!plan) return
+                    if (plan.error) return reportError(plan.error)
+                    setRemoving({ id: beat.id, title: beat.title, plan })
                   })
                 }}
               >
