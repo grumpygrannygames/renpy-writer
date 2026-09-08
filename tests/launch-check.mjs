@@ -172,6 +172,20 @@ async function makeFixture() {
  */
 const MAY_TAKE_FOCUS = process.env.CI === 'true' || process.env.RPW_E2E_FOCUS === '1'
 
+/**
+ * Where the window sits: off the desktop entirely.
+ *
+ * It has to be shown -- a window that is never shown gives focus to nothing,
+ * so blur never fires and click-to-edit appears to work when it is broken --
+ * but shown is not the same as in the way. Eight minutes of somebody else's
+ * window arriving over your work is the same interruption as taking the
+ * keyboard, whether or not the focus goes with it.
+ *
+ * Everything that matters still works out here: layout is computed, the page
+ * is composited, and capturePage returns a real picture.
+ */
+const PARKED = [-4200, -4200]
+
 const WATCHDOG_MS = 900000 * PACE
 const watchdog = setTimeout(() => {
   console.log(`  FAIL harness timed out after ${WATCHDOG_MS / 1000}s`)
@@ -262,6 +276,7 @@ app.whenReady().then(async () => {
   }
 
   await win.loadFile(path.join(out, 'renderer', 'index.html'))
+  win.setPosition(PARKED[0], PARKED[1])
   win.showInactive()
   await settle(win.webContents, "document.querySelector('.gate-card')")
   // A moment more: the gate is drawn before the project list arrives.
@@ -1569,6 +1584,10 @@ app.whenReady().then(async () => {
     // Windows will not always hand the foreground to a process that is not
     // already in it, so ask more than once and in more than one way rather than
     // assuming a single call worked.
+  // On screen for this, since real key events need a window the desktop is
+    // willing to put in front. Nothing here runs unless there is nobody to
+    // interrupt.
+    win.setPosition(60, 60)
     let focused = false
     for (let attempt = 0; attempt < 5 && !focused; attempt++) {
       win.showInactive()
@@ -1637,8 +1656,10 @@ app.whenReady().then(async () => {
     check('editing never leaves the character', pressed.afterSecond?.heading === 'Ben',
       String(pressed.afterSecond?.heading))
 
-    // Hand the keyboard back the moment it is no longer needed.
+    // Hand the keyboard back the moment it is no longer needed, and get out
+    // of the way again.
     win.blur()
+    win.setPosition(PARKED[0], PARKED[1])
   }
 
   console.log('\n[image hover in the code view]')
@@ -3188,7 +3209,14 @@ app.whenReady().then(async () => {
     await wait(400);
     return { stage: 'ok', status: document.querySelector('.statusbar')?.textContent ?? null };
   })()`)
-  const afterHide = await fs.readFile(scriptPath, 'utf8')
+  // The write goes over HTTP and then to disk, and how long that takes is not
+  // ours to guess. Wait for it to land rather than for a number of
+  // milliseconds; a save that never lands still fails, just later.
+  let afterHide = beforeHide
+  for (let i = 0; i < 60 && afterHide === beforeHide; i++) {
+    await sleep(150)
+    afterHide = await fs.readFile(scriptPath, 'utf8')
+  }
 
   check('an edit can be made in the writer over HTTP', hidden.stage === 'ok',
     JSON.stringify(hidden))
@@ -3204,11 +3232,18 @@ app.whenReady().then(async () => {
     const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
     Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));
-    await wait(3000);
-    const text = await window.renpyWriter.currentApi()
-      .readEpisode(${JSON.stringify(root)}, 'chapter_2.rpy');
-    const shown = Array.from(document.querySelectorAll('.blk-action .blk-view'))
-      .some(e => e.textContent.indexOf('FROM ELSEWHERE') !== -1);
+
+    // Coming back re-reads the file and redraws the tab; wait for that to
+    // happen rather than for a number that was right on one machine.
+    let text = '';
+    let shown = false;
+    for (let i = 0; i < 40 && !shown; i++) {
+      await wait(250);
+      text = await window.renpyWriter.currentApi()
+        .readEpisode(${JSON.stringify(root)}, 'chapter_2.rpy');
+      shown = Array.from(document.querySelectorAll('.blk-action .blk-view'))
+        .some(e => e.textContent.indexOf('FROM ELSEWHERE') !== -1);
+    }
     return { onDisk: text.indexOf('FROM ELSEWHERE') !== -1, shown };
   })()`)
   check('a change made elsewhere is not clobbered on return',
