@@ -3,6 +3,7 @@ import { useStore } from '../state/store'
 import { useCast } from '../useCast'
 import { readableOn } from '../color'
 import CharacterFields from './CharacterFields'
+import RenameVariableDialog from './RenameVariableDialog'
 
 /** Must match --bg in styles.css. */
 const EDITOR_BG = '#16161a'
@@ -20,6 +21,7 @@ export default function CharacterEditor({ characterKey }: { characterKey: string
 
   const [adding, setAdding] = useState('')
   const [renameError, setRenameError] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState<{ varName: string; name: string } | null>(null)
 
   const profile = profiles.find((p) => p.note.id === characterKey)
 
@@ -100,6 +102,13 @@ export default function CharacterEditor({ characterKey }: { characterKey: string
                 {v.expressions.length > 0 && (
                   <span className="cv-count">{v.expressions.length} expressions</span>
                 )}
+                <button
+                  className="ghost cv-rename"
+                  title="Rename this character in the script"
+                  onClick={() => setRenaming({ varName: v.varName, name: v.name })}
+                >
+                  Rename
+                </button>
                 <button className="ghost cv-remove" onClick={() => unassign(v.varName)}>
                   Unlink
                 </button>
@@ -147,6 +156,14 @@ export default function CharacterEditor({ characterKey }: { characterKey: string
           </section>
         )}
       </div>
+
+      {renaming && (
+        <RenameVariableDialog
+          varName={renaming.varName}
+          name={renaming.name}
+          onClose={() => setRenaming(null)}
+        />
+      )}
     </div>
   )
 }

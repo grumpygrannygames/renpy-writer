@@ -18,6 +18,16 @@ const KEYWORDS = new Set([
   'not', 'or', 'pass', 'raise', 'return', 'try', 'while', 'with', 'yield'
 ])
 
+/** Whether Python would refuse this as a variable name. */
+export function isReservedName(name: string): boolean {
+  return KEYWORDS.has(name)
+}
+
+/** Whether this could be a Ren'Py variable at all. */
+export function isVarName(name: string): boolean {
+  return /^[A-Za-z_]\w*$/.test(name) && !KEYWORDS.has(name)
+}
+
 /**
  * "Mara Kowalski" -> "mara_kowalski", "Åsa" -> "asa".
  *

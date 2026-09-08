@@ -50,6 +50,7 @@ import { cliRunner } from '@core/passes/runner'
 import { scanCharacters } from '@core/renpy/characters'
 import { defineCharacter } from '@core/renpy/define'
 import { renameCharacter } from '@core/renpy/rename'
+import { renameVariable } from '@core/renpy/renameVariable'
 import { readPortrait, resolveImageName } from '@core/renpy/images'
 import {
   newSidecarProject,
@@ -360,6 +361,64 @@ export function registerHandlers(register: Register, host: HostServices): void {
       )
       // Rescan either way so the caller always sees the current truth.
       return { ...result, characters: await scanCharacters(root) }
+    }
+  )
+
+  /**
+   * Rename a character in the script: the variable it is defined as, the name
+   * it speaks under, or both.
+   *
+   * Both at once because they are one thought -- Cook becoming Detective Cook
+   * is a new variable and a new display name -- and doing them separately
+   * means a half-done rename if the second one is refused.
+   */
+  register(
+    IPC.renameVariable,
+    async (root: string, varName: string, changes: { varName?: string; name?: string }) => {
+      const provider = ws(root)
+      const cast = await scanCharacters(root)
+      const target = cast.find((c) => c.varName === varName)
+      if (!target?.sourceFile || !target.sourceLine) {
+        return { ok: false, reason: `${varName} is not defined in this project.`, characters: cast }
+      }
+
+      // The display name first: it is found by the line the scanner recorded,
+      // and renaming the variable would rewrite that very line.
+      if (changes.name !== undefined && changes.name !== target.name) {
+        const named = await renameCharacter(
+          provider,
+          target.sourceFile,
+          target.sourceLine,
+          varName,
+          changes.name
+        )
+        if (!named.ok) {
+          return { ...named, characters: await scanCharacters(root) }
+        }
+      }
+
+      if (changes.varName !== undefined && changes.varName !== varName) {
+        const moved = await renameVariable(root, provider, varName, changes.varName)
+        if (!moved.ok) {
+          return { ...moved, characters: await scanCharacters(root) }
+        }
+
+        // The profile points at the variable by name, so it has to come along
+        // or the character is orphaned from their own notes.
+        const reference = await readReference(provider)
+        const claimed = reference.characters.some((c) => c.varNames.includes(varName))
+        if (claimed) {
+          await writeReference(provider, {
+            ...reference,
+            characters: reference.characters.map((c) => ({
+              ...c,
+              varNames: c.varNames.map((v) => (v === varName ? changes.varName! : v))
+            }))
+          })
+        }
+      }
+
+      return { ok: true, characters: await scanCharacters(root) }
     }
   )
 

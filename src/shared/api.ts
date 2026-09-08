@@ -312,6 +312,22 @@ export interface RenpyWriterApi {
   ): Promise<{ ok: boolean; reason?: string; characters: DiscoveredCharacter[] }>
 
   /**
+   * Rename a character in the script itself: the variable it is defined as,
+   * the name it speaks under, or both at once. Refuses, with the places
+   * listed, when the variable is used somewhere this cannot safely rewrite.
+   */
+  renameVariable(
+    renpyRoot: string,
+    varName: string,
+    changes: { varName?: string; name?: string }
+  ): Promise<{
+    ok: boolean
+    reason?: string
+    mentions?: string[]
+    characters: DiscoveredCharacter[]
+  }>
+
+  /**
    * Write `define x = Character("Name")` into game/characters.rpy for someone
    * who is not in the script yet, creating that file if it is missing.
    * Returns the variable it chose and the cast as it now reads.
@@ -415,6 +431,7 @@ export const IPC = {
   resolveImage: 'project:image',
   renameCharacter: 'project:renameCharacter',
   defineCharacter: 'project:defineCharacter',
+  renameVariable: 'project:renameVariable',
   readReference: 'reference:read',
   writeReference: 'reference:write',
   createEpisode: 'episodes:create',

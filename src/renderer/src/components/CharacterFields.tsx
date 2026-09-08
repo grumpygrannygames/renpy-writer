@@ -7,7 +7,15 @@ import { parseLinks, type RefTarget } from '../wikiLink'
  * alphabetical. Accent sits with the factual fields because it drives
  * translation; the long-form fields follow.
  */
-type FieldKey = 'birthday' | 'age' | 'accent' | 'bio' | 'trivia' | 'relations' | 'storyHooks'
+type FieldKey =
+  | 'fullName'
+  | 'birthday'
+  | 'age'
+  | 'accent'
+  | 'bio'
+  | 'trivia'
+  | 'relations'
+  | 'storyHooks'
 
 interface FieldSpec {
   key: FieldKey
@@ -18,6 +26,12 @@ interface FieldSpec {
 }
 
 export const CHARACTER_FIELDS: FieldSpec[] = [
+  {
+    key: 'fullName',
+    label: 'Full name',
+    placeholder: 'e.g. James Cook',
+    hint: 'Yours to know. The script goes on calling them whatever it calls them.'
+  },
   { key: 'birthday', label: 'Birthday', placeholder: 'e.g. December 6' },
   { key: 'age', label: 'Age' },
   {

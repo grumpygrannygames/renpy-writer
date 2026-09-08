@@ -71,6 +71,28 @@ const PACE = process.env.CI ? 2 : 1
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms * PACE))
 
 /**
+ * A picture of a window, saved under the name given.
+ *
+ * Wrapped because `capturePage` asks the compositor for a frame and the
+ * compositor is entitled to say no -- an occluded window, a GPU process
+ * restarting, and it rejects with UnknownVizError. That rejection once went
+ * unhandled and stalled the whole suite until the watchdog fired, which is a
+ * great deal of consequence for a screenshot nobody was checking. Pictures are
+ * a courtesy; nothing here is allowed to fail because one could not be taken.
+ */
+const shoot = async (contents, name) => {
+  const file = path.join(os.tmpdir(), 'rpw-shots', name)
+  try {
+    const image = await contents.capturePage()
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, image.toPNG())
+    console.log('  screenshot: ' + file)
+  } catch (e) {
+    console.log('  (no screenshot of ' + name + ': ' + (e?.message ?? String(e)) + ')')
+  }
+}
+
+/**
  * Wait for something to become true in a page, rather than for a number of
  * milliseconds.
  *
@@ -156,10 +178,18 @@ app.whenReady().then(async () => {
   registerIpc()
   const root = await makeFixture()
 
-  // Shown, not hidden. A hidden window never gives focus to anything, so blur
-  // never fires and click-to-edit appears to work even when it is broken.
+  /**
+   * Shown, but never given focus.
+   *
+   * Shown, because a hidden window gives focus to nothing, so blur never fires
+   * and click-to-edit appears to work even when it is broken. Not focused,
+   * because a suite that takes eight minutes and steals the keyboard the
+   * moment it starts is a suite nobody runs while doing anything else. The
+   * window is opened with showInactive() once the page has loaded, which
+   * renders and composites it without taking it to the front.
+   */
   const win = new BrowserWindow({
-    show: true,
+    show: false,
     width: 1400,
     height: 900,
     webPreferences: {
@@ -167,9 +197,9 @@ app.whenReady().then(async () => {
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
-      // The window is hidden, and Chromium stops dispatching scroll events and
-      // throttles timers in hidden windows. Without this, anything driven by
-      // scrolling silently never fires here.
+      // Chromium throttles timers and stops dispatching scroll events in a
+      // window it considers hidden, and one sitting behind another counts.
+      // Without this, anything driven by scrolling silently never fires.
       backgroundThrottling: false
     }
   })
@@ -226,7 +256,7 @@ app.whenReady().then(async () => {
   }
 
   await win.loadFile(path.join(out, 'renderer', 'index.html'))
-  win.focus()
+  win.showInactive()
   await settle(win.webContents, "document.querySelector('.gate-card')")
   // A moment more: the gate is drawn before the project list arrives.
   await sleep(600)
@@ -241,7 +271,7 @@ app.whenReady().then(async () => {
   check('React mounted', shell.mounted)
   check('project gate rendered', shell.gate)
   check('heading reads the app name', shell.heading === 'Ren’Py Writer', String(shell.heading))
-  check('api exposes all 37 methods', shell.apiMethods === 37, String(shell.apiMethods))
+  check('api exposes all 38 methods', shell.apiMethods === 38, String(shell.apiMethods))
 
   console.log('\n[a broken bridge says so]')
   {
@@ -618,6 +648,41 @@ app.whenReady().then(async () => {
   check('Tab completes to the first suggestion', completed.after === 'ava', String(completed.after))
   check('Tab keeps focus in the character field so it can be corrected', completed.stillFocused === true)
 
+  // The name a character is known by is often not the name the script sorts
+  // them under. Cora Vale is `cora` to the engine, and somebody thinking of
+  // her as Vale had no way to reach her.
+  const byLaterWord = await js(`(async () => {${UNTIL}
+    const input = document.querySelector('.blk-character-input');
+    if (!input) return { stage: 'no input' };
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    const offer = async (text) => {
+      setter.call(input, text);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await wait(250);
+      return Array.from(document.querySelectorAll('.speaker-suggest .ss-var')).map(e => e.textContent);
+    };
+    return {
+      stage: 'ok',
+      surname: await offer('vale'),
+      middle: await offer('emor'),
+      front: await offer('av'),
+      nobody: await offer('zzzz')
+    };
+  })()`)
+
+  check('a later word in the name finds them',
+    (byLaterWord.surname ?? []).includes('cora'), JSON.stringify(byLaterWord.surname))
+  check('and so does the middle of a script name',
+    (byLaterWord.middle ?? []).includes('nico_memory'), JSON.stringify(byLaterWord.middle))
+  check('while the start of one still comes first',
+    (byLaterWord.front ?? [])[0] === 'ava', JSON.stringify(byLaterWord.front))
+  check('and a name nobody has offers nobody',
+    (byLaterWord.nobody ?? []).length === 0, JSON.stringify(byLaterWord.nobody))
+
+  await js(`document.querySelector('.blk-character-input')?.dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`)
+  await sleep(300)
+
   // Autosave: edit a line and wait, without pressing Ctrl+S.
   // The window is created hidden, so the document has no focus and
   // element.blur() is a no-op in Chromium; dispatch focusout instead, which is
@@ -868,6 +933,216 @@ app.whenReady().then(async () => {
   check('switching back returns to the same place', sync.backLine === sync.writerLine,
     sync.writerLine + ' -> ' + sync.backLine)
 
+  // The half of that journey the check above cannot see. The writer draws
+  // dialogue and headings; `scene`, `show` and `if` are code, and code is not
+  // drawn there. So the line the code view was looking at very often does not
+  // exist in the writer at all -- and asking to scroll to a line that is not
+  // there scrolls nowhere, which is how switching views landed back at the top
+  // of a file somebody was seven hundred lines into.
+  const acrossCode = await js(`(async () => {${UNTIL}
+    const lnOf = () => {
+      const m = document.querySelector('.statusbar')?.textContent.match(/Ln ([0-9]+)/);
+      return m ? Number(m[1]) : null;
+    };
+    const clickMode = (name) => Array.from(document.querySelectorAll('.mode-switch button'))
+      .find(b => b.textContent === name)?.click();
+    // Chromium dispatches no scroll event of its own for this window, so the
+    // listener the app installed is poked by hand.
+    const scrollTo = async (el, top) => {
+      el.scrollTop = top;
+      el.dispatchEvent(new WheelEvent('wheel', { bubbles: true }));
+      el.dispatchEvent(new Event('scroll'));
+      await wait(500);
+    };
+
+    clickMode('Writer');
+    await until(() => document.querySelector('.writer-page [data-line]'));
+    const page = document.querySelector('.writer-page');
+    const drawn = Array.from(page.querySelectorAll('[data-line]')).map(e => Number(e.dataset.line));
+    const drawnSet = new Set(drawn);
+    // A line of the file the writer does not draw. Aimed at rather than
+    // stumbled upon: the sample is nearly all dialogue.
+    const wanted = drawn.length
+      ? Array.from({ length: 400 }, (_, i) => i + 1).find(n => !drawnSet.has(n) && n > 10) ?? null
+      : null;
+    if (wanted === null) return { stage: 'every line is drawn' };
+
+    clickMode('Code');
+    const cm = await until(() => document.querySelector('.cm-scroller'));
+    if (!cm) return { stage: 'no code view' };
+    const lines = Number((document.querySelector('.statusbar')?.textContent
+      .match(/([0-9]+) lines/) || [])[1] || 0);
+    if (!lines) return { stage: 'no line count' };
+
+    const lineHeight = cm.scrollHeight / lines;
+    for (let tries = 0; tries < 6; tries++) {
+      const ln = lnOf();
+      if (tries > 0 && ln === wanted) break;
+      const top = tries === 0
+        ? (wanted - 1) * lineHeight - cm.clientHeight / 2
+        : cm.scrollTop + (wanted - (ln ?? 1)) * lineHeight;
+      await scrollTo(cm, Math.max(0, Math.round(top)));
+    }
+    const parked = lnOf();
+
+    clickMode('Writer');
+    await until(() => document.querySelector('.writer-page'));
+    await wait(900);
+    return {
+      stage: 'ok', wanted, parked,
+      parkedIsDrawn: drawnSet.has(parked),
+      nearestAbove: drawn.filter(l => l <= parked).pop() ?? null,
+      backLine: lnOf(),
+      backScroll: document.querySelector('.writer-page')?.scrollTop ?? null
+    };
+  })()`)
+
+  check('the code view can be parked on a line the writer does not draw',
+    acrossCode.stage === 'ok' && acrossCode.parkedIsDrawn === false,
+    JSON.stringify(acrossCode))
+  check('and the writer opens at the block that line belongs to',
+    acrossCode.backLine === acrossCode.nearestAbove,
+    'nearest ' + acrossCode.nearestAbove + ' vs ' + acrossCode.backLine)
+  check('rather than at the top of the file', (acrossCode.backScroll ?? 0) > 100,
+    String(acrossCode.backScroll))
+
+  console.log('\n[finding words]')
+  const finding = await js(`(async () => {${UNTIL}
+    const setVal = (el, v) => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(el, v);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const key = (el, k, extra) => el.dispatchEvent(
+      new KeyboardEvent('keydown', Object.assign({ key: k, bubbles: true }, extra || {})));
+    const clickMode = (name) => Array.from(document.querySelectorAll('.mode-switch button'))
+      .find(b => b.textContent === name)?.click();
+
+    clickMode('Writer');
+    await until(() => document.querySelector('.writer-page [data-line]'));
+    document.querySelector('.writer-page').scrollTop = 0;
+    await wait(300);
+
+    key(window, 'f', { ctrlKey: true });
+    const bar = await until(() => document.querySelector('.find-bar'));
+    if (!bar) return { stage: 'no bar in the writer' };
+    const focused = document.activeElement === document.querySelector('.find-input');
+
+    setVal(document.querySelector('.find-input'), 'beat 9');
+    await wait(700);
+    const count = document.querySelector('.find-count')?.textContent ?? null;
+    const hit = !!document.querySelector('.hit-current');
+    const marked = document.querySelectorAll('.hit-found').length;
+    const scrolled = document.querySelector('.writer-page')?.scrollTop ?? 0;
+
+    // Held open here so it can be photographed; the rest follows below.
+    return { stage: 'open', focused, count, hit, marked, scrolled };
+  })()`)
+
+  check('Ctrl+F opens a find bar in the writer', finding.stage === 'open',
+    JSON.stringify(finding).slice(0, 200))
+  check('with the field already focused', finding.focused === true, String(finding.focused))
+  check('it counts what it found', /^1 of \d+$/.test(finding.count ?? ''), String(finding.count))
+  check('marks every hit', (finding.marked ?? 0) > 0, String(finding.marked))
+  check('and brings the first one on screen', (finding.scrolled ?? 0) > 0, String(finding.scrolled))
+
+  // A search that finds nothing, or highlights nothing, looks perfectly well
+  // in the DOM. This is the only check that would notice.
+  await shoot(win.webContents, 'find-bar.png')
+
+  const stepping = await js(`(async () => {${UNTIL}
+    const setVal = (el, v) => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(el, v);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    const key = (el, k, extra) => el.dispatchEvent(
+      new KeyboardEvent('keydown', Object.assign({ key: k, bubbles: true }, extra || {})));
+    const clickMode = (name) => Array.from(document.querySelectorAll('.mode-switch button'))
+      .find(b => b.textContent === name)?.click();
+    if (!document.querySelector('.find-input')) return { stage: 'the bar closed itself' };
+
+    key(document.querySelector('.find-input'), 'Enter');
+    await wait(500);
+    const afterEnter = document.querySelector('.find-count')?.textContent ?? null;
+    key(document.querySelector('.find-input'), 'Enter', { shiftKey: true });
+    await wait(500);
+    const afterBack = document.querySelector('.find-count')?.textContent ?? null;
+
+    setVal(document.querySelector('.find-input'), 'nobody wrote this');
+    await wait(600);
+    const none = document.querySelector('.find-count')?.textContent ?? null;
+
+    key(document.querySelector('.find-input'), 'Escape');
+    await wait(400);
+    const closed = !document.querySelector('.find-bar');
+    const stillMarked = document.querySelectorAll('.hit-found, .hit-current').length;
+
+    // And the same keystroke in the other view.
+    clickMode('Code');
+    await until(() => document.querySelector('.cm-scroller'));
+    const cm = document.querySelector('.cm-scroller');
+    // Let the view settle where the writer left it before moving it. Switching
+    // views carries the reading position across, and CodeMirror applies that
+    // scroll in its own measure pass -- park it any sooner and the arriving
+    // scroll puts it straight back.
+    await wait(1200);
+
+    // Then a long way from the first match. The code view opens where the
+    // writer was, which is on top of it, and a search with nothing to scroll
+    // to proves nothing about scrolling.
+    cm.scrollTop = Math.round(cm.scrollHeight * 0.9);
+    cm.dispatchEvent(new Event('scroll'));
+    await wait(700);
+    const parkedLine = Number((document.querySelector('.statusbar')?.textContent
+      .match(/Ln ([0-9]+)/) || [])[1]) || 0;
+    key(window, 'f', { ctrlKey: true });
+    const codeBar = await until(() => document.querySelector('.find-bar'));
+    if (!codeBar) return { stage: 'no bar in the code view', count, closed };
+    setVal(document.querySelector('.find-input'), 'beat 9');
+    await wait(900);
+    const codeCount = document.querySelector('.find-count')?.textContent ?? null;
+
+    // What the code view is actually looking at now, which is the thing that
+    // matters however many pixels it took to get there. Written without a
+    // single backslash: this is inside a template literal, where an escape
+    // like the one for a newline becomes a real newline, and a regular
+    // expression containing one of those does not parse.
+    const bar = document.querySelector('.statusbar')?.textContent ?? '';
+    const file = (bar.match(/([a-z0-9_]+.rpy)/) || [])[1] ?? null;
+    const source = file ? await window.api.readEpisode(${JSON.stringify(root)}, file) : '';
+    const landedLine = Number((bar.match(/Ln ([0-9]+)/) || [])[1]) || 0;
+    const landedOn = source.split(String.fromCharCode(10))[landedLine - 1] ?? null;
+
+    key(document.querySelector('.find-input'), 'Escape');
+    await wait(400);
+
+    return {
+      stage: 'ok', afterEnter, afterBack, none, closed, stillMarked,
+      codeCount, parkedLine, landedLine, landedOn
+    };
+  })()`)
+
+  check('the bar stays put while it is worked with', stepping.stage === 'ok',
+    JSON.stringify(stepping).slice(0, 200))
+  check('Enter goes to the next', /^2 of \d+$/.test(stepping.afterEnter ?? ''),
+    String(stepping.afterEnter))
+  check('and Shift+Enter comes back', /^1 of \d+$/.test(stepping.afterBack ?? ''),
+    String(stepping.afterBack))
+  check('a word nobody wrote says so plainly', stepping.none === 'None', String(stepping.none))
+  check('Escape closes it', stepping.closed === true, String(stepping.closed))
+  check('and takes the highlighting with it', stepping.stillMarked === 0,
+    String(stepping.stillMarked))
+  check('the same keystroke works in the code view',
+    /^1 of \d+$/.test(stepping.codeCount ?? ''), String(stepping.codeCount))
+  // Judged by which line it ends up on, not by how many pixels it travelled:
+  // CodeMirror draws only what is on screen, so its scroll height is an
+  // estimate that grows as you move through the file and says nothing about
+  // distance.
+  check('and moves the source away from where it was parked',
+    (stepping.landedLine ?? 0) > 0 && stepping.landedLine !== stepping.parkedLine,
+    'parked on ' + stepping.parkedLine + ', landed on ' + stepping.landedLine)
+  check('onto the line that was found',
+    /beat 9/i.test(stepping.landedOn ?? ''), String(stepping.landedOn))
+
   console.log('\n[character profiles]')
   const prof = await js(`(async () => {
     const toggle = Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Reference');
@@ -960,6 +1235,48 @@ app.whenReady().then(async () => {
     prof.savedVarNames.join(','))
   check('the order list records it', prof.savedOrder.length === 1, JSON.stringify(prof.savedOrder))
 
+  // What the script calls somebody and who they are need not be the same. A
+  // character the game only ever names as Detective Cook can be James Cook in
+  // the notes, and the script is left saying what it says.
+  const fullName = await js(`(async () => {${UNTIL}
+    const field = Array.from(document.querySelectorAll('.chareditor .ref-field'))
+      .find(el => el.querySelector('.rf-label')?.textContent === 'Full name');
+    if (!field) {
+      return { stage: 'no such field',
+               fields: Array.from(document.querySelectorAll('.chareditor .rf-label'))
+                 .map(e => e.textContent) };
+    }
+    field.querySelector('.rf-view').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    const input = await until(() => field.querySelector('input'));
+    if (!input) return { stage: 'field would not open' };
+    Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+      .call(input, 'Ava Vale-Whitmore');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    await wait(1800);
+
+    const saved = await window.api.readReference(${JSON.stringify(root)});
+    const scriptNames = Array.from(document.querySelectorAll('.chareditor .cv-script'))
+      .map(e => e.textContent);
+    return {
+      stage: 'ok',
+      shown: field.querySelector('.rf-view')?.textContent ?? null,
+      scriptNames,
+      savedFullName: saved.characters[0]?.fullName ?? null,
+      savedName: saved.characters[0]?.name ?? null
+    };
+  })()`)
+
+  check('a character has a full name of their own', fullName.stage === 'ok',
+    JSON.stringify(fullName).slice(0, 200))
+  check('it is kept with the notes', fullName.savedFullName === 'Ava Vale-Whitmore',
+    String(fullName.savedFullName))
+  check('and the name the script uses is left alone',
+    (fullName.scriptNames ?? []).includes('Ava'), JSON.stringify(fullName.scriptNames))
+  check('both are on screen at once, which is the point',
+    (fullName.shown ?? '').includes('Vale-Whitmore') && (fullName.scriptNames ?? []).length > 0,
+    String(fullName.shown))
+
   console.log('\n[assigning a variable to an existing profile]')
   const assigned = await js(`(async () => {
     const select = document.querySelector('.ce-assign select');
@@ -1016,6 +1333,71 @@ app.whenReady().then(async () => {
   check('exactly one script line changed', renamed.changed === 1, String(renamed.changed))
   check('the profile name is independent of script names',
     renamed.profileName === 'Ava', String(renamed.profileName))
+
+  // The variable itself, which is the harder half: it is on every line that
+  // character speaks, so renaming it rewrites the whole project.
+  const varRenamed = await js(`(async () => {${UNTIL}
+    const row = Array.from(document.querySelectorAll('.ce-varlist li'))
+      .find(li => li.querySelector('.cv-name')?.textContent === 'ava_thoughts');
+    if (!row) return { stage: 'no such row' };
+    row.querySelector('.cv-rename').click();
+    const modal = await until(() => document.querySelector('.rename-modal'));
+    if (!modal) return { stage: 'no dialog' };
+
+    const fields = Array.from(modal.querySelectorAll('.field input'));
+    if (fields.length < 2) return { stage: 'not two fields', fields: fields.length };
+    const prefilled = fields.map(f => f.value);
+
+    const set = (el, v) => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(el, v);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    set(fields[0], 'ava_inner');
+    set(fields[1], 'Ava (inner voice)');
+    await wait(200);
+    Array.from(modal.querySelectorAll('.actions-row button'))
+      .find(b => b.textContent.indexOf('Rename') === 0).click();
+    await until(() => !document.querySelector('.rename-modal'), 12000);
+    await wait(1200);
+
+    return {
+      stage: 'ok', prefilled,
+      rows: Array.from(document.querySelectorAll('.ce-varlist li .cv-name')).map(e => e.textContent),
+      scriptNames: Array.from(document.querySelectorAll('.ce-varlist .cv-script')).map(e => e.textContent),
+      saved: (await window.api.readReference(${JSON.stringify(root)})).characters[0]?.varNames ?? []
+    };
+  })()`)
+
+  check('a variable can be renamed from the character view', varRenamed.stage === 'ok',
+    JSON.stringify(varRenamed).slice(0, 220))
+  check('the dialog opens on what is there now',
+    JSON.stringify(varRenamed.prefilled) === '["ava_thoughts","Ava (inner)"]',
+    JSON.stringify(varRenamed.prefilled))
+  check('the variable list shows the new name',
+    (varRenamed.rows ?? []).includes('ava_inner') &&
+    !(varRenamed.rows ?? []).includes('ava_thoughts'), JSON.stringify(varRenamed.rows))
+  check('and the display name changed with it',
+    (varRenamed.scriptNames ?? []).includes('Ava (inner voice)'),
+    JSON.stringify(varRenamed.scriptNames))
+  // The profile points at the variable by name. If it did not come along, the
+  // character would be orphaned from their own notes.
+  check('the profile followed the rename',
+    (varRenamed.saved ?? []).includes('ava_inner'), JSON.stringify(varRenamed.saved))
+
+  const renamedSource = await fs.readFile(path.join(root, 'game', 'scripts', 'script.rpy'), 'utf8')
+  const renamedChapter = await fs.readFile(path.join(root, 'game', 'scripts', 'chapter_2.rpy'), 'utf8')
+  check('the define was rewritten',
+    renamedSource.includes('define ava_inner = Character("Ava (inner voice)"'),
+    (renamedSource.split(/\r?\n/).find((l) => l.includes('ava_inner')) ?? 'not found'))
+  check('the lines they speak were rewritten too',
+    /^\s+ava_inner\b/m.test(renamedChapter),
+    (renamedChapter.split(/\r?\n/).find((l) => l.includes('ava_inner')) ?? 'not found'))
+  check('the old name is gone from the script',
+    !renamedSource.includes('ava_thoughts') && !renamedChapter.includes('ava_thoughts'),
+    'ava_thoughts still there')
+  check('while the sibling variable it starts like is untouched',
+    /define ava = Character/.test(renamedSource) && /^\s+ava\b/m.test(renamedChapter),
+    'ava went missing')
 
   console.log('\n[ctrl+click resolves through the profile]')
   const ctrlClicked = await js(`(async () => {
@@ -1235,6 +1617,12 @@ app.whenReady().then(async () => {
     pressed.afterSecond?.open === 1, JSON.stringify(pressed.afterSecond))
   check('editing never leaves the character', pressed.afterSecond?.heading === 'Ben',
     String(pressed.afterSecond?.heading))
+
+  // Hand the keyboard back. That section is the only one that needs the
+  // foreground -- real key events go to whichever window the desktop says is
+  // in front -- and a suite that keeps it for the remaining several minutes is
+  // one nobody can run while doing anything else.
+  win.blur()
 
   console.log('\n[image hover in the code view]')
   const hover = await js(`(async () => {
@@ -3002,7 +3390,7 @@ app.whenReady().then(async () => {
 
   const clashShots = path.join(os.tmpdir(), 'rpw-shots')
   await fs.mkdir(clashShots, { recursive: true })
-  await fs.writeFile(path.join(clashShots, 'conflict.png'), (await web.webContents.capturePage()).toPNG())
+  await shoot(web.webContents, 'conflict.png')
   console.log('  screenshot: ' + path.join(clashShots, 'conflict.png'))
 
   const clashAnswered = await webJs(`(async () => {
@@ -3129,11 +3517,7 @@ app.whenReady().then(async () => {
     !(refused.buttons ?? []).some(b => /^Send \d+ waiting/.test(b ?? '')),
     JSON.stringify(refused.buttons))
 
-  const shotDir = path.join(os.tmpdir(), 'rpw-shots')
-  await fs.mkdir(shotDir, { recursive: true })
-  const shot = await web.webContents.capturePage()
-  await fs.writeFile(path.join(shotDir, 'refused-push.png'), shot.toPNG())
-  console.log('  screenshot: ' + path.join(shotDir, 'refused-push.png'))
+  await shoot(web.webContents, 'refused-push.png')
 
   // The next commits in this run must not be turned into proposals too.
   await fs.rm(hook, { force: true })
@@ -3268,8 +3652,10 @@ app.whenReady().then(async () => {
 
   check('a line offers its element types by name', elements.stage === 'ok',
     JSON.stringify(elements))
-  check('all three are listed',
-    JSON.stringify(elements.names) === '["Dialogue","Action","Choice"]',
+  // Choice is not among them, and deliberately so: one option needs a `menu:`
+  // around it, and nothing here could say where that menu ought to end.
+  check('the two it can make are listed',
+    JSON.stringify(elements.names) === '["Dialogue","Action"]',
     JSON.stringify(elements.names))
   check('the current one is marked',
     JSON.stringify(elements.active) === '["Dialogue"]', JSON.stringify(elements.active))
@@ -3947,13 +4333,7 @@ app.whenReady().then(async () => {
     })()`)
     check('the scene menu opens over the page', menuOpen.stage === 'ok', JSON.stringify(menuOpen))
 
-    const writerShots = path.join(os.tmpdir(), 'rpw-shots')
-    await fs.mkdir(writerShots, { recursive: true })
-    await fs.writeFile(
-      path.join(writerShots, 'writer-scenes.png'),
-      (await win.webContents.capturePage()).toPNG()
-    )
-    console.log('  screenshot: ' + path.join(writerShots, 'writer-scenes.png'))
+    await shoot(win.webContents, 'writer-scenes.png')
 
     await js(`(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -4071,13 +4451,7 @@ app.whenReady().then(async () => {
 
     // The dialog as it stands, offer and all. Checks read the DOM, which has
     // been known to look perfect while the thing on screen was unreadable.
-    const dialogShots = path.join(os.tmpdir(), 'rpw-shots')
-    await fs.mkdir(dialogShots, { recursive: true })
-    await fs.writeFile(
-      path.join(dialogShots, 'define-character.png'),
-      (await win.webContents.capturePage()).toPNG()
-    )
-    console.log('  screenshot: ' + path.join(dialogShots, 'define-character.png'))
+    await shoot(win.webContents, 'define-character.png')
 
     const made = await js(`(async () => {${UNTIL}
       Array.from(document.querySelectorAll('.modal .actions-row button'))

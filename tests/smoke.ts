@@ -21,6 +21,7 @@ import { centreIndex } from '../src/renderer/src/anchor'
 import { shouldWriteReference } from '../src/renderer/src/state/referenceSave'
 import { renameCharacter } from '../src/core/renpy/rename'
 import { defineCharacter } from '../src/core/renpy/define'
+import { renameVariable } from '../src/core/renpy/renameVariable'
 import { characterVarName, toVarName } from '../src/shared/renpy/names'
 import { resolveImageName, readPortrait } from '../src/core/renpy/images'
 import { imageNameAt } from '../src/renderer/src/imageHover'
@@ -46,6 +47,9 @@ import {
 } from '../src/server/auth'
 import { IPC } from '../src/shared/api'
 import { canvasQuality } from '../src/main/encoder'
+import { centreIndex, nearestLine } from '../src/renderer/src/anchor'
+import { matchingIndexes, offsetsIn, step } from '../src/renderer/src/find'
+import { matchSpeakers, speakerRank } from '../src/renderer/src/speakerMatch'
 import {
   escapeText,
   parseDocument,
@@ -746,6 +750,231 @@ async function main() {
     withQuote.find((c) => c.varName === 'ava')?.name === "O'Hara",
     withQuote.find((c) => c.varName === 'ava')?.name)
   await restore()
+
+  console.log('\n[keeping your place when the views swap]')
+  {
+    // The writer draws dialogue and headings. `scene`, `show` and `if` are
+    // code, and code is not drawn there -- so the line the code view was
+    // looking at very often does not exist in the writer, and asking to scroll
+    // to a line that is not there scrolls nowhere. That is the whole bug: you
+    // were at line 700 and the writer opened at the top of the file.
+    const drawn = [1, 4, 5, 9, 20]
+
+    check('a line that is drawn is used as it is', nearestLine(drawn, 5) === 5)
+    check('a line that is not falls back to the block above it',
+      nearestLine(drawn, 7) === 5, String(nearestLine(drawn, 7)))
+    check('the scene above is the right answer, not the one below',
+      nearestLine(drawn, 8) === 5, String(nearestLine(drawn, 8)))
+    check('past the last one, the last one',
+      nearestLine(drawn, 900) === 20, String(nearestLine(drawn, 900)))
+    // Above everything drawn there is nothing to fall back to, so go forwards.
+    check('before the first one, the first one',
+      nearestLine([4, 9], 2) === 4, String(nearestLine([4, 9], 2)))
+    check('an empty file has no answer at all', nearestLine([], 5) === null)
+
+    // The other half of the same journey, unchanged but worth stating.
+    check('the block at the middle of the screen is the one above the line',
+      centreIndex([0, 100, 200, 300], 250) === 2)
+  }
+
+  console.log('\n[finding words]')
+  {
+    check('nothing is found for nothing', offsetsIn('the letter', '').length === 0)
+    check('a word is found where it is',
+      JSON.stringify(offsetsIn('the letter on the table', 'the')) === '[0,14]',
+      JSON.stringify(offsetsIn('the letter on the table', 'the')))
+    check('case is not a difference',
+      JSON.stringify(offsetsIn('The Letter', 'letter')) === '[4]',
+      JSON.stringify(offsetsIn('The Letter', 'letter')))
+    // A reader stepping through matches would be right to expect both of these.
+    check('overlapping occurrences all count',
+      JSON.stringify(offsetsIn('aaa', 'aa')) === '[0,1]',
+      JSON.stringify(offsetsIn('aaa', 'aa')))
+
+    const lines = ['She reads it.', 'He says nothing.', 'She reads it again.']
+    check('the blocks that contain it are listed',
+      JSON.stringify(matchingIndexes(lines, 'reads')) === '[0,2]',
+      JSON.stringify(matchingIndexes(lines, 'reads')))
+    check('and none of them for a word nobody wrote',
+      matchingIndexes(lines, 'zebra').length === 0)
+    check('surrounding space in the query is ignored',
+      JSON.stringify(matchingIndexes(lines, '  reads ')) === '[0,2]')
+
+    // Wrapping rather than stopping: the last match is the end of the file,
+    // not the end of the search.
+    check('stepping forward moves on', step(0, 3, 1) === 1)
+    check('and wraps at the end', step(2, 3, 1) === 0)
+    check('stepping back wraps too', step(0, 3, -1) === 2)
+    check('with nothing found there is nowhere to step', step(0, 0, 1) === -1)
+  }
+
+  console.log('\n[finding the right speaker as you type]')
+  {
+    const cast = [
+      { varName: 'cook', name: 'Detective Cook' },
+      { varName: 'detective_cook', name: 'Detective Cook' },
+      { varName: 'dev', name: 'Dev' },
+      { varName: 'ava', name: 'Ava' },
+      { varName: 'ben_thoughts', name: 'Ben' }
+    ] as never[]
+
+    // The old behaviour: only what the name starts with. A character the game
+    // calls Detective Cook could only be reached by typing 'de'.
+    check('the start of the script name still wins',
+      speakerRank({ varName: 'dev', name: 'Dev' }, 'de') === 0)
+    check('the start of the display name is next',
+      speakerRank({ varName: 'x1', name: 'Detective Cook' }, 'de') === 1)
+    // The one that was missing.
+    check('a later word in the name counts',
+      speakerRank({ varName: 'x1', name: 'Detective Cook' }, 'cook') === 2,
+      String(speakerRank({ varName: 'x1', name: 'Detective Cook' }, 'cook')))
+    check('and a later word in the script name',
+      speakerRank({ varName: 'detective_cook', name: 'Someone' }, 'cook') === 2,
+      String(speakerRank({ varName: 'detective_cook', name: 'Someone' }, 'cook')))
+    check('anywhere at all still counts, last',
+      speakerRank({ varName: 'x1', name: 'Blackwood' }, 'ackwo') === 3,
+      String(speakerRank({ varName: 'x1', name: 'Blackwood' }, 'ackwo')))
+    check('and somebody unrelated does not',
+      speakerRank({ varName: 'ava', name: 'Ava' }, 'cook') === null)
+
+    check('typing the middle of a name finds them',
+      matchSpeakers(cast, 'cook').map((c) => c.varName).join(',') === 'cook,detective_cook',
+      JSON.stringify(matchSpeakers(cast, 'cook').map((c) => c.varName)))
+    check('while the front of a name still comes first',
+      matchSpeakers(cast, 'de')[0].varName === 'dev',
+      JSON.stringify(matchSpeakers(cast, 'de').map((c) => c.varName)))
+    check('nothing typed offers nobody', matchSpeakers(cast, '   ').length === 0)
+    check('the list is kept short', matchSpeakers(cast, 'e', 2).length === 2)
+  }
+
+  console.log('\n[renaming a character in the script]')
+  {
+    const RENAME = path.join(SCRATCH, 'renaming')
+    const renameWs = new LocalWorkspaceProvider(RENAME)
+
+    const build = async (files: Record<string, string[]>): Promise<void> => {
+      await fs.rm(RENAME, { recursive: true, force: true })
+      await fs.mkdir(path.join(RENAME, 'game'), { recursive: true })
+      for (const [name, lines] of Object.entries(files)) {
+        await fs.writeFile(path.join(RENAME, 'game', name), lines.join(String.fromCharCode(10)) + String.fromCharCode(10), 'utf8')
+      }
+    }
+    const read = async (name: string): Promise<string> =>
+      fs.readFile(path.join(RENAME, 'game', name), 'utf8')
+
+    // The ordinary case, and everything around it that must not move.
+    await build({
+      'characters.rpy': [
+        'define cook = Character("Cook", image="cook")',
+        'define cook_thoughts = Character("Cook")'
+      ],
+      'chapter.rpy': [
+        'label start:',
+        '    scene bg_room',
+        '    show cook neutral',
+        '    cook "Evening."',
+        '    cook tired "It has been a long one."',
+        '    cook_thoughts "He should not have said that."',
+        '    "The cook put the kettle on."',
+        '    e "Have you met cook?"',
+        '    return'
+      ]
+    })
+
+    const done = await renameVariable(RENAME, renameWs, 'cook', 'detective_cook')
+    check('a rename that is only speech and a define goes through', done.ok, done.reason)
+    const defines = await read('characters.rpy')
+    const chapter = await read('chapter.rpy')
+
+    check('the define is renamed',
+      defines.includes('define detective_cook = Character("Cook", image="cook")'),
+      defines)
+    check('every line they speak follows',
+      chapter.includes('    detective_cook "Evening."') &&
+      chapter.includes('    detective_cook tired "It has been a long one."'), chapter)
+    // The image tag is a different world from the variable. Renaming inside it
+    // would break the pictures to fix nothing.
+    check('the image tag is left exactly as it was',
+      chapter.includes('    show cook neutral') &&
+      defines.includes('image="cook"'), chapter)
+    check('a sibling variable that starts the same is untouched',
+      defines.includes('define cook_thoughts = Character("Cook")') &&
+      chapter.includes('    cook_thoughts "He should not have said that."'), chapter)
+    check('the word inside a line of dialogue is left alone',
+      chapter.includes('"The cook put the kettle on."') &&
+      chapter.includes('e "Have you met cook?"'), chapter)
+    check('and nothing else in the file moved',
+      chapter.includes('label start:') && chapter.includes('    scene bg_room') &&
+      chapter.includes('    return'), chapter)
+
+    // Used as more than a speaker: rewriting blind would leave a game that
+    // loads and then breaks, so it refuses and says where.
+    await build({
+      'characters.rpy': ['define cook = Character("Cook")'],
+      'chapter.rpy': [
+        'label start:',
+        '    cook "Evening."',
+        '    $ cook.name = "Detective Cook"',
+        '    return'
+      ]
+    })
+    const refused = await renameVariable(RENAME, renameWs, 'cook', 'detective_cook')
+    check('a variable used in Python is refused', !refused.ok, JSON.stringify(refused))
+    check('and the place is named',
+      (refused.mentions ?? []).some((m) => m.includes('chapter.rpy:3')),
+      JSON.stringify(refused.mentions))
+    check('nothing at all was written',
+      (await read('chapter.rpy')).includes('    cook "Evening."') &&
+      (await read('characters.rpy')).includes('define cook ='),
+      await read('chapter.rpy'))
+
+    // A name somebody else already has.
+    await build({
+      'characters.rpy': [
+        'define cook = Character("Cook")',
+        'define ava = Character("Ava")'
+      ]
+    })
+    const taken = await renameVariable(RENAME, renameWs, 'cook', 'ava')
+    check('a name already defined is refused', !taken.ok && /already defined/.test(taken.reason ?? ''),
+      String(taken.reason))
+    const keyword = await renameVariable(RENAME, renameWs, 'cook', 'class')
+    check('and so is one Python would not accept', !keyword.ok, String(keyword.reason))
+    const punctuated = await renameVariable(RENAME, renameWs, 'cook', 'detective cook')
+    check('nor one with a space in it', !punctuated.ok, String(punctuated.reason))
+
+    // A label that happens to share the name is not the character.
+    await build({
+      'characters.rpy': ['define cook = Character("Cook")'],
+      'chapter.rpy': ['label cook:', '    cook "Evening."', '    jump cook', '    return']
+    })
+    const pastLabels = await renameVariable(RENAME, renameWs, 'cook', 'detective_cook')
+    check('a label of the same name does not block the rename', pastLabels.ok,
+      String(pastLabels.reason))
+    const labelled = await read('chapter.rpy')
+    check('and is left alone, being a different thing entirely',
+      labelled.includes('label cook:') && labelled.includes('    jump cook') &&
+      labelled.includes('    detective_cook "Evening."'), labelled)
+
+    // Windows line endings survive, as everywhere else.
+    await fs.rm(RENAME, { recursive: true, force: true })
+    await fs.mkdir(path.join(RENAME, 'game'), { recursive: true })
+    const CRLF2 = String.fromCharCode(13, 10)
+    await fs.writeFile(path.join(RENAME, 'game', 'characters.rpy'),
+      'define cook = Character("Cook")' + CRLF2 + 'label x:' + CRLF2 + '    cook "Hi."' + CRLF2,
+      'utf8')
+    const windows = await renameVariable(RENAME, renameWs, 'cook', 'detective_cook')
+    check('a CRLF file is rewritten as a CRLF file', windows.ok, String(windows.reason))
+    const wtext = await read('characters.rpy')
+    check('with every line still ending the way it did',
+      wtext.split(String.fromCharCode(10)).every((l) => l === '' || l.endsWith(String.fromCharCode(13))),
+      JSON.stringify(wtext))
+
+    check('renaming to the same name does nothing at all',
+      (await renameVariable(RENAME, renameWs, 'detective_cook', 'detective_cook')).ok)
+
+    await fs.rm(RENAME, { recursive: true, force: true })
+  }
 
   console.log('\n[the placeholder in a planned scene]')
   {

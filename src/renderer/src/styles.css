@@ -774,6 +774,95 @@ label.check input {
   font-style: italic;
 }
 
+.rename-modal {
+  max-width: 560px;
+}
+/* The list of places a rename would break, when it refuses to make one. */
+.rename-modal .rm-list {
+  max-height: 180px;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+/* ---------------------------------------------------------------- finding */
+
+/*
+ * Floats over the editor rather than pushing it down: opening a search must
+ * not move the text somebody is looking for.
+ */
+.find-bar {
+  position: absolute;
+  top: 10px;
+  right: 18px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+/*
+ * The writer has a toolbar of its own up there; the code view does not. Sit
+ * below it rather than over the top of the one control it holds.
+ */
+.writer .find-bar {
+  top: 46px;
+}
+.find-input {
+  width: 210px;
+  font: inherit;
+  font-family: var(--sans);
+  font-size: 13px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+}
+.find-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+/* Nothing found reads better as the field going quiet than as an error. */
+.find-input.none {
+  border-color: var(--warn);
+}
+.find-count {
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--text-faint);
+  min-width: 58px;
+  text-align: right;
+}
+.find-step {
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim);
+}
+.find-step:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: transparent;
+}
+
+/* Every hit is marked; the one being looked at is marked louder. */
+.hit-found {
+  background: rgba(255, 214, 102, 0.12);
+  border-radius: 4px;
+}
+.hit-current {
+  background: rgba(255, 214, 102, 0.26);
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px rgba(255, 214, 102, 0.5);
+}
+
 /*
  * The way into a scene that has nothing in it.
  *

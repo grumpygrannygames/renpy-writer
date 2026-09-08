@@ -166,6 +166,11 @@ interface AppState {
   renameScriptCharacter: (varName: string, newName: string) => Promise<string | null>
   /** Write a Character() definition for somebody the script does not have. */
   defineScriptCharacter: (name: string) => Promise<{ varName?: string; error?: string }>
+  /** Rename a character in the script: the variable, the display name, or both. */
+  renameScriptVariable: (
+    varName: string,
+    changes: { varName?: string; name?: string }
+  ) => Promise<{ error?: string; mentions?: string[] }>
   upsertLocation: (location: LocationNote) => void
   upsertNote: (note: FreeNote) => void
   removeReferenceItem: (kind: 'characters' | 'locations' | 'notes', id: string) => void
@@ -616,6 +621,34 @@ export const useStore = create<AppState>((set, get) => ({
     // The rescan is authoritative whether or not the write succeeded.
     set({ characters: result.characters })
     return result.ok ? null : (result.reason ?? 'Could not rename that character.')
+  },
+
+  renameScriptVariable: async (varName, changes) => {
+    const opened = get().opened
+    if (!opened) return { error: 'No project open.' }
+    const root = opened.project.renpyRoot
+    // Anything typed and not yet saved goes to disk first: the rename is made
+    // against the files, and a line still sitting in an editor would be
+    // rewritten back over the top of it a second later.
+    await get().flushPendingSaves()
+    const result = await api.renameVariable(root, varName, changes)
+    // The rescan is authoritative whether or not anything was written.
+    set({ characters: result.characters })
+    if (!result.ok) {
+      return { error: result.reason ?? 'Could not rename that.', mentions: result.mentions }
+    }
+    // Every open script may have had a speaker rewritten in it. Only the
+    // scripts: a character or outline tab is not a file, and asking to read
+    // one as an episode fails.
+    await reloadTabs(
+      root,
+      get().tabs.filter(isEpisodeTab).map((t) => t.fileName),
+      get,
+      set
+    )
+    const reference = await api.readReference(root)
+    set({ reference, referenceFor: root })
+    return {}
   },
 
   defineScriptCharacter: async (name) => {

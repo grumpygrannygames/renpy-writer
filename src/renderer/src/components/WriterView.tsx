@@ -13,9 +13,10 @@ import {
 } from 'react'
 import type { PassMode } from '@shared/api'
 import type { DiscoveredCharacter } from '@shared/types'
-import { centreIndex } from '../anchor'
+import { centreIndex, nearestLine } from '../anchor'
 import { readableOn } from '../color'
 import { buildLabeller, type Labeller } from '../characterLabel'
+import { matchSpeakers } from '../speakerMatch'
 import {
   parseDocument,
   serializeDocument,
@@ -31,6 +32,8 @@ import {
 } from '@shared/renpy/document'
 import { api } from '../api'
 import ContextMenu, { type MenuPosition } from './ContextMenu'
+import FindBar from './FindBar'
+import { matchingIndexes, step } from '../find'
 
 interface Props {
   docKey: string
@@ -66,8 +69,16 @@ interface Props {
 
 type Field = 'speaker' | 'text'
 
-/** Element types the writer can cycle a block through with Tab. */
-const CYCLE: Array<ScriptNode['kind']> = ['dialogue', 'action', 'choice']
+/**
+ * Element types the writer can turn a block into.
+ *
+ * Not choice. A choice is one option inside a `menu:`, and a line of dialogue
+ * turned into one on its own is a script that will not load: there is no menu
+ * around it, and nothing here could say where that menu ought to end. Choices
+ * written in the script are still shown as choices -- they read far better
+ * than the source does -- they just cannot be made or unmade from here.
+ */
+const CYCLE: Array<ScriptNode['kind']> = ['dialogue', 'action']
 
 /** Must match --bg in styles.css. */
 const WRITER_BG = '#16161a'
@@ -113,6 +124,10 @@ export default function WriterView({
    */
   const freshLabels = useRef<Set<string>>(new Set())
   const [labelMenu, setLabelMenu] = useState<{ id: string; at: MenuPosition } | null>(null)
+  const [finding, setFinding] = useState(false)
+  const [query, setQuery] = useState('')
+  const [match, setMatch] = useState(0)
+  const [findNonce, setFindNonce] = useState(0)
   /** Recomputes the anchor; set once the scroller is listening. */
   const reportRef = useRef<(() => void) | null>(null)
   /**
@@ -167,8 +182,17 @@ export default function WriterView({
   // Scrolling here comes from an outline click, which knows source line numbers.
   useLayoutEffect(() => {
     if (!revealLine || !scroller.current) return
-    armGuard(revealLine)
-    const target = scroller.current.querySelector(`[data-line="${revealLine}"]`)
+    // The code view counts every line; this one draws only some of them. Land
+    // on the nearest block at or above the line asked for rather than nowhere.
+    const drawn = Array.from(
+      scroller.current.querySelectorAll<HTMLElement>('[data-line]')
+    ).map((el) => Number(el.dataset.line))
+    const line = nearestLine(drawn, revealLine)
+    if (line === null) return
+    // Armed with where we are going, not where we were asked to go, or the
+    // first report back would look like a disagreement and be thrown away.
+    armGuard(line)
+    const target = scroller.current.querySelector(`[data-line="${line}"]`)
     target?.scrollIntoView({ block: 'center' })
     // Recompute as the scroll settles instead of waiting for the event.
     const timers = [80, 250].map((ms) => window.setTimeout(() => reportRef.current?.(), ms))
@@ -397,10 +421,12 @@ export default function WriterView({
   const setKind = useCallback((id: string, kind: ScriptNode['kind']) => {
     const node = docRef.current.nodes.find((n) => n.id === id)
     if (!node || node.kind === kind) return
-    const text =
-      node.kind === 'dialogue' || node.kind === 'action' || node.kind === 'choice'
-        ? node.text
-        : ''
+    // A choice belongs to the menu it is written in. Turning one into dialogue
+    // takes the colon off the end and leaves the menu with an option that is
+    // not an option; turning dialogue into one puts an option where no menu is
+    // listening. Both are scripts that will not load.
+    if (node.kind === 'choice' || kind === 'choice') return
+    const text = node.kind === 'dialogue' || node.kind === 'action' ? node.text : ''
 
     replaceNode(id, (n) => {
       const base = { id: n.id, indent: n.indent, raw: null, eol: n.eol }
@@ -463,6 +489,19 @@ export default function WriterView({
     replaceNode(id, (n) => touch(n as never, { text: escapeText(result.text) } as never))
   }, [replaceNode])
 
+  // Ctrl+F, or Cmd+F, wherever the caret happens to be.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        setFinding(true)
+        setFindNonce((v) => v + 1)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   // Report the line under the middle of the viewport as the sync anchor.
   useEffect(() => {
     const el = scroller.current
@@ -474,19 +513,26 @@ export default function WriterView({
     const report = (): void => {
       timer = 0
       const middle = el.scrollTop + el.clientHeight / 2
-      const kids = el.children
+      // Only the children that stand for a line of the file. The invitation to
+      // start an empty scene is a child too, and reporting nothing at all
+      // because the middle of the screen landed on one would freeze the anchor.
       const tops: number[] = []
-      for (let i = 0; i < kids.length; i++) tops.push((kids[i] as HTMLElement).offsetTop)
+      const lines: number[] = []
+      for (const kid of Array.from(el.children) as HTMLElement[]) {
+        if (!kid.dataset.line) continue
+        tops.push(kid.offsetTop)
+        lines.push(Number(kid.dataset.line))
+      }
       const best = centreIndex(tops, middle)
-      const line = best >= 0 ? (kids[best] as HTMLElement).dataset.line : undefined
-      if (!line) return
+      if (best < 0) return
+      const line = lines[best]
 
       const target = pendingReveal.current
       if (target !== null) {
-        if (Math.abs(Number(line) - target) > 2) return
+        if (Math.abs(line - target) > 2) return
         pendingReveal.current = null
       }
-      onAnchorLineRef.current?.(Number(line))
+      onAnchorLineRef.current?.(line)
     }
 
     const onScroll = (): void => {
@@ -513,7 +559,35 @@ export default function WriterView({
     // Reads the DOM only, so it must not re-run (and re-arm) on every edit.
   }, [docKey])
 
-  const visible = showCode ? doc.nodes : doc.nodes.filter((n) => n.kind !== 'raw')
+  const visible = useMemo(
+    () => (showCode ? doc.nodes : doc.nodes.filter((n) => n.kind !== 'raw')),
+    [doc, showCode]
+  )
+
+  /**
+   * The words on the page, one entry per block.
+   *
+   * What is searched is what is shown: the line as the writer reads it rather
+   * than the Ren'Py behind it, so looking for a quotation mark does not turn
+   * up every line of dialogue in the file.
+   */
+  const searchable = useMemo(
+    () =>
+      visible.map((node) => {
+        if (node.kind === 'label') return node.name
+        if (node.kind === 'dialogue' || node.kind === 'choice') return unescapeText(node.text)
+        if (node.kind === 'action') return node.text
+        return node.raw ?? ''
+      }),
+    [visible]
+  )
+  const matches = useMemo(() => matchingIndexes(searchable, query), [searchable, query])
+  const at = matches.length > 0 ? Math.min(match, matches.length - 1) : -1
+  const foundIds = useMemo(() => new Set(matches.map((i) => visible[i].id)), [matches, visible])
+  const currentId = at >= 0 ? visible[matches[at]].id : null
+
+  // A new search starts at the top of it.
+  useEffect(() => setMatch(0), [query])
 
   // Source line per node, kept accurate across edits rather than read off the id.
   const lineOf = useMemo(() => {
@@ -563,8 +637,32 @@ export default function WriterView({
     return map
   }, [doc])
 
+  /** Bring the match on screen, without the anchor mistaking it for reading. */
+  const currentLine = currentId ? (lineOf.get(currentId) ?? null) : null
+  useLayoutEffect(() => {
+    if (!finding || currentLine === null || !scroller.current) return
+    armGuard(currentLine)
+    scroller.current
+      .querySelector(`[data-line="${currentLine}"]`)
+      ?.scrollIntoView({ block: 'center' })
+  }, [finding, currentLine])
+
   return (
     <div className="writer">
+      {finding && (
+        <FindBar
+          query={query}
+          onQuery={setQuery}
+          total={matches.length}
+          current={at}
+          onStep={(delta) => setMatch(step(at, matches.length, delta))}
+          onClose={() => {
+            setFinding(false)
+            setQuery('')
+          }}
+          focusNonce={findNonce}
+        />
+      )}
       <div className="writer-toolbar">
         <span className="wt-hint">
           <kbd>Tab</kbd> element &middot; <kbd>Enter</kbd> new line &middot; <kbd>Ctrl</kbd>+
@@ -585,6 +683,13 @@ export default function WriterView({
           <Fragment key={node.id}>
           <Block
             node={node}
+            mark={
+              finding && foundIds.has(node.id)
+                ? node.id === currentId
+                  ? 'current'
+                  : 'found'
+                : undefined
+            }
             line={lineOf.get(node.id) ?? 0}
             renpyRoot={renpyRoot}
             beat={beatRange.get(node.id)}
@@ -678,6 +783,8 @@ interface BlockProps {
   onAddBeat: (id: string | null) => void
   onRemoveBeat?: (label: string) => void
   onLabelMenu: (id: string, at: { x: number; y: number }) => void
+  /** Highlight for a search hit, and for the one being looked at. */
+  mark?: 'found' | 'current'
   onTab: (id: string) => void
   onKind?: (id: string, kind: ScriptNode['kind']) => void
   onBackspaceEmpty: (id: string) => void
@@ -686,7 +793,7 @@ interface BlockProps {
 }
 
 const Block = memo(function Block(props: BlockProps) {
-  const { node, line, renpyRoot, beat, onBeatPass, editing, byVar, labeller, expressionsEnabled, onFocusField, onBlur, onChangeNode, onRevealCharacter, onRenameLabel, onStartBeat, onLabelMenu } =
+  const { node, line, renpyRoot, beat, onBeatPass, editing, byVar, labeller, expressionsEnabled, onFocusField, onBlur, onChangeNode, onRevealCharacter, onRenameLabel, onStartBeat, onLabelMenu, mark } =
     props
 
   if (node.kind === 'blank') return <div className="blk-blank" data-line={line} />
@@ -699,9 +806,11 @@ const Block = memo(function Block(props: BlockProps) {
     )
   }
 
+  const found = mark ? ' hit-' + mark : ''
+
   if (node.kind === 'label') {
     return (
-      <div className="blk-label" data-line={line}>
+      <div className={'blk-label' + found} data-line={line}>
         {editing === 'text' ? (
           <input
             data-edit={`${node.id}-text`}
@@ -773,7 +882,7 @@ const Block = memo(function Block(props: BlockProps) {
 
   if (node.kind === 'action') {
     return (
-      <div className="blk-action" data-line={line}>
+      <div className={'blk-action' + found} data-line={line}>
         <EditableText {...props} field="text" value={node.text} placeholder="Action" />
       </div>
     )
@@ -781,7 +890,7 @@ const Block = memo(function Block(props: BlockProps) {
 
   if (node.kind === 'choice') {
     return (
-      <div className="blk-choice" data-line={line}>
+      <div className={'blk-choice' + found} data-line={line}>
         <span className="blk-choice-mark">&#9656;</span>
         <EditableText
           {...props}
@@ -802,7 +911,7 @@ const Block = memo(function Block(props: BlockProps) {
     : { name: 'NARRATOR', variant: null }
 
   return (
-    <div className="blk-dialogue" data-line={line}>
+    <div className={'blk-dialogue' + found} data-line={line}>
       <div className="blk-character">
         {editing === 'speaker' ? (
           <SpeakerInput
@@ -1019,8 +1128,7 @@ interface FormatBarProps {
  */
 const ELEMENT_NAMES: Record<string, string> = {
   dialogue: 'Dialogue',
-  action: 'Action',
-  choice: 'Choice'
+  action: 'Action'
 }
 
 function FormatBar({ onMarkup, onSize, kind, onKind }: FormatBarProps) {
@@ -1190,8 +1298,8 @@ function EditableText({
     <div className="blk-edit">
       {showFormatting && (
         <FormatBar
-          kind={node.kind}
-          onKind={(next) => onKind?.(node.id, next)}
+          kind={CYCLE.includes(node.kind) ? node.kind : undefined}
+          onKind={CYCLE.includes(node.kind) ? (next) => onKind?.(node.id, next) : undefined}
           onMarkup={(kind) => ref.current && onMarkup(node.id, ref.current, kind)}
           onSize={(delta) => ref.current && onSize(node.id, ref.current, delta)}
         />
@@ -1265,14 +1373,7 @@ function SpeakerInput({ nodeId, initial, characters, onCommit, onDone, onAdvance
   const [active, setActive] = useState(0)
   const committed = useRef(false)
 
-  const matches = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return []
-    return characters
-      .filter((c) => c.varName.toLowerCase().startsWith(q) || c.name.toLowerCase().startsWith(q))
-      .sort((a, b) => a.varName.localeCompare(b.varName))
-      .slice(0, 8)
-  }, [characters, query])
+  const matches = useMemo(() => matchSpeakers(characters, query), [characters, query])
 
   const exact = matches.length === 1 && matches[0].varName.toLowerCase() === query.trim().toLowerCase()
 

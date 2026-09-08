@@ -1,9 +1,11 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { EditorState } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, highlightActiveLine } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { renpySetup } from '../renpyMode'
 import { imageHover, type ImageLookup } from '../imageHover'
+import FindBar from './FindBar'
+import { offsetsIn, step } from '../find'
 
 interface Props {
   /** Identifies the document; changing it rebuilds the editor. */
@@ -38,6 +40,10 @@ export default function CodeView({
 }: Props) {
   const host = useRef<HTMLDivElement>(null)
   const view = useRef<EditorView | null>(null)
+  const [finding, setFinding] = useState(false)
+  const [query, setQuery] = useState('')
+  const [match, setMatch] = useState(0)
+  const [findNonce, setFindNonce] = useState(0)
   // Kept in refs so the editor is never rebuilt just because a callback changed.
   const onChangeRef = useRef(onChange)
   const onSaveRef = useRef(onSave)
@@ -170,5 +176,66 @@ export default function CodeView({
     return () => timers.forEach(clearTimeout)
   }, [revealLine, docKey])
 
-  return <div className="cm-host" ref={host} />
+  /**
+   * Matched here rather than with CodeMirror's own search panel, so that
+   * finding something works and looks the same in both views. A panel that
+   * appears in one of them and not the other is worse than a plain one that
+   * appears in both.
+   */
+  const matches = useMemo(() => offsetsIn(value, query), [value, query])
+  const at = matches.length > 0 ? Math.min(match, matches.length - 1) : -1
+
+  // A new search starts at the top of it.
+  useEffect(() => setMatch(0), [query])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        setFinding(true)
+        setFindNonce((v) => v + 1)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  // Select the match and bring it into view. Selecting rather than only
+  // scrolling means the caret is already there when the bar is closed.
+  useEffect(() => {
+    const v = view.current
+    if (!finding || !v || at < 0) return
+    const from = matches[at]
+    const to = Math.min(from + query.length, v.state.doc.length)
+    armGuard(v.state.doc.lineAt(from).number)
+    v.dispatch({
+      selection: { anchor: from, head: to },
+      effects: EditorView.scrollIntoView(from, { y: 'center' })
+    })
+    const timers = [80, 250].map((ms) => window.setTimeout(() => reportRef.current?.(), ms))
+    return () => timers.forEach(clearTimeout)
+    // `matches` is derived from the same text the editor holds.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finding, at, matches, query.length])
+
+  return (
+    <>
+      {finding && (
+        <FindBar
+          query={query}
+          onQuery={setQuery}
+          total={matches.length}
+          current={at}
+          onStep={(delta) => setMatch(step(at, matches.length, delta))}
+          onClose={() => {
+            setFinding(false)
+            setQuery('')
+            view.current?.focus()
+          }}
+          focusNonce={findNonce}
+        />
+      )}
+      <div className="cm-host" ref={host} />
+    </>
+  )
 }

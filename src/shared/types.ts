@@ -240,6 +240,12 @@ export interface CharacterNote {
   varNames: string[]
   /** The name used in notes. Script display names stay per-variable. */
   name: string
+  /**
+   * Who they are, as opposed to what the script calls them. A character the
+   * game only ever names as Detective Cook can be James Cook here, and the
+   * script is left saying what it says.
+   */
+  fullName?: string
   birthday?: string
   age?: string
   /**
