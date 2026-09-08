@@ -53,6 +53,30 @@ export function toVarName(name: string): string {
 }
 
 /**
+ * A name nothing else is using, numbered only as far as it has to be.
+ *
+ * Counting continues from a number the name already ends with rather than
+ * starting again after it: a second MORNING_2 is MORNING_3, not MORNING_2_2,
+ * which is what you get by appending without looking. A few rounds of that and
+ * the name is mostly underscores and twos.
+ *
+ * `taken` decides what counts as used, so a caller comparing labels can ignore
+ * case while one comparing variables need not.
+ */
+export function freeName(wanted: string, taken: (name: string) => boolean): string {
+  if (!taken(wanted)) return wanted
+  // A trailing number is a count somebody (or this) already added to it.
+  const numbered = wanted.match(/^(.+)_(\d+)$/)
+  const base = numbered ? numbered[1] : wanted
+  let n = numbered ? Number(numbered[2]) + 1 : 2
+  for (;;) {
+    const candidate = `${base}_${n}`
+    if (!taken(candidate)) return candidate
+    n++
+  }
+}
+
+/**
  * The same, made unique against what the project already defines.
  *
  * Ren'Py refuses to load a file that defines the same name twice, so a second
@@ -60,12 +84,7 @@ export function toVarName(name: string): string {
  */
 export function characterVarName(name: string, taken: Iterable<string>): string {
   const used = new Set(taken)
-  const base = toVarName(name)
-  if (!used.has(base)) return base
-  for (let n = 2; ; n++) {
-    const candidate = `${base}_${n}`
-    if (!used.has(candidate)) return candidate
-  }
+  return freeName(toVarName(name), (candidate) => used.has(candidate))
 }
 
 /** Ren'Py string escaping for a display name written inside double quotes. */

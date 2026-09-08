@@ -17,6 +17,7 @@ import { centreIndex, nearestLine } from '../anchor'
 import { readableOn } from '../color'
 import { buildLabeller, type Labeller } from '../characterLabel'
 import { matchSpeakers } from '../speakerMatch'
+import { freeName } from '@shared/renpy/names'
 import {
   parseDocument,
   serializeDocument,
@@ -294,10 +295,7 @@ export default function WriterView({
       for (const node of docRef.current.nodes) {
         if (node.kind === 'label' && node.id !== exceptId) taken.add(node.name.toLowerCase())
       }
-      if (!taken.has(want.toLowerCase())) return want
-      for (let i = 2; ; i++) {
-        if (!taken.has(`${want}_${i}`.toLowerCase())) return `${want}_${i}`
-      }
+      return freeName(want, (candidate) => taken.has(candidate.toLowerCase()))
     },
     [otherLabels]
   )

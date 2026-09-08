@@ -24,7 +24,7 @@ import { defineCharacter } from '../src/core/renpy/define'
 import { renameVariable } from '../src/core/renpy/renameVariable'
 import { __testing as restructureTesting } from '../src/core/renpy/restructure'
 import { renameLabelIn } from '../src/core/renpy/renameLabel'
-import { characterVarName, toVarName } from '../src/shared/renpy/names'
+import { characterVarName, freeName, toVarName } from '../src/shared/renpy/names'
 import { resolveImageName, readPortrait } from '../src/core/renpy/images'
 import { imageNameAt } from '../src/renderer/src/imageHover'
 import { appendBeat, moveBeat, planRemoveBeat, removeBeat } from '../src/core/renpy/restructure'
@@ -908,6 +908,42 @@ async function main() {
     const kept = relinkLinear(onwards)
     check('a jump out of the file is left alone',
       kept.text.includes('jump EPISODE_2_START'), kept.text)
+  }
+
+  console.log('\n[numbering a name that is already taken]')
+  {
+    const used = (...names: string[]) => (candidate: string) => names.includes(candidate)
+
+    check('a free name is left alone', freeName('MORNING', used('EVENING')) === 'MORNING')
+    check('a taken one is numbered', freeName('MORNING', used('MORNING')) === 'MORNING_2')
+    check('and counts past the ones already there',
+      freeName('MORNING', used('MORNING', 'MORNING_2')) === 'MORNING_3',
+      freeName('MORNING', used('MORNING', 'MORNING_2')))
+
+    // Appending without looking is how a name ends up mostly underscores and
+    // twos. A second MORNING_2 is MORNING_3.
+    check('a name that already ends in a number carries on counting',
+      freeName('MORNING_2', used('MORNING_2')) === 'MORNING_3',
+      freeName('MORNING_2', used('MORNING_2')))
+    check('and keeps carrying on',
+      freeName('MORNING_2', used('MORNING_2', 'MORNING_3', 'MORNING_4')) === 'MORNING_5',
+      freeName('MORNING_2', used('MORNING_2', 'MORNING_3', 'MORNING_4')))
+    check('so a name is never numbered twice over',
+      !freeName('MORNING_2', used('MORNING_2')).includes('_2_'),
+      freeName('MORNING_2', used('MORNING_2')))
+
+    // A number that is part of the name rather than a count is still only a
+    // place to carry on from.
+    check('a chapter number is carried on from, not appended to',
+      freeName('DAY_14', used('DAY_14')) === 'DAY_15', freeName('DAY_14', used('DAY_14')))
+
+    // And the same rule reaches the places that name things.
+    check('character variables are numbered the same way',
+      characterVarName('Mara', ['mara', 'mara_2']) === 'mara_3',
+      characterVarName('Mara', ['mara', 'mara_2']))
+    check('and one whose name already ends in a number carries on too',
+      characterVarName('Mara 2', ['mara_2']) === 'mara_3',
+      characterVarName('Mara 2', ['mara_2']))
   }
 
   console.log('\n[renaming a scene, and everything that points at it]')

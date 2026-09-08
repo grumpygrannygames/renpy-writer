@@ -50,6 +50,7 @@ import type { Decision } from '@core/git/conflicts'
 import { cliRunner } from '@core/passes/runner'
 import { scanCharacters } from '@core/renpy/characters'
 import { defineCharacter } from '@core/renpy/define'
+import { freeName } from '@shared/renpy/names'
 import { renameCharacter } from '@core/renpy/rename'
 import { renameVariable } from '@core/renpy/renameVariable'
 import { renameLabelEverywhere } from '@core/renpy/renameLabel'
@@ -612,10 +613,7 @@ export function registerHandlers(register: Register, host: HostServices): void {
         if (span.label !== except) taken.add(span.label.toLowerCase())
       }
     }
-    const base = toLabelName(wanted)
-    let label = base
-    for (let n = 2; taken.has(label.toLowerCase()); n++) label = `${base}_${n}`
-    return label
+    return freeName(toLabelName(wanted), (candidate) => taken.has(candidate.toLowerCase()))
   }
 
   register(IPC.createBeat, async (root: string, episodeId: string, title: string) => {
