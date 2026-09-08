@@ -54,6 +54,14 @@ export default function RemoveBeatDialog({
               {removing.plan.lines === 1 ? 'line' : 'lines'} will be removed from{' '}
               <code>{removing.plan.fileName}</code>. This writes to the script.
             </p>
+            {removing.plan.retargeted.length > 0 && (
+              <p className="hint">
+                {removing.plan.retargeted.length === 1
+                  ? `${beatName(removing.plan.retargeted[0])} ends by jumping here, so it will`
+                  : `${removing.plan.retargeted.length} scenes end by jumping here, so they will`}{' '}
+                jump to whatever follows instead.
+              </p>
+            )}
             {removing.plan.runsIntoInstead && (
               <p className="hint">
                 {beatName(removing.plan.runsIntoInstead.from)} runs straight into this scene, so

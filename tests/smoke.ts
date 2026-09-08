@@ -22,6 +22,8 @@ import { shouldWriteReference } from '../src/renderer/src/state/referenceSave'
 import { renameCharacter } from '../src/core/renpy/rename'
 import { defineCharacter } from '../src/core/renpy/define'
 import { renameVariable } from '../src/core/renpy/renameVariable'
+import { __testing as restructureTesting } from '../src/core/renpy/restructure'
+import { renameLabelIn } from '../src/core/renpy/renameLabel'
 import { characterVarName, toVarName } from '../src/shared/renpy/names'
 import { resolveImageName, readPortrait } from '../src/core/renpy/images'
 import { imageNameAt } from '../src/renderer/src/imageHover'
@@ -845,6 +847,184 @@ async function main() {
       JSON.stringify(matchSpeakers(cast, 'de').map((c) => c.varName)))
     check('nothing typed offers nobody', matchSpeakers(cast, '   ').length === 0)
     check('the list is kept short', matchSpeakers(cast, 'e', 2).length === 2)
+  }
+
+  console.log('\n[the jumps that keep file order and story order agreeing]')
+  {
+    const { relinkLinear } = restructureTesting
+    const lines = (...parts: string[]): string => parts.join(String.fromCharCode(10)) + String.fromCharCode(10)
+
+    // A planned beat is held open by `pass`. Once it ends in a jump it is held
+    // open by the jump, and a beat reading `pass` and then `jump` says the
+    // same thing twice -- one of them saying "nothing here yet".
+    const planned = lines(
+      'label one:',
+      '    pass',
+      '',
+      'label two:',
+      '    pass',
+      '',
+      'label three:',
+      '    pass'
+    )
+    const linked = relinkLinear(planned)
+    check('a jump replaces the placeholder rather than following it',
+      !/pass[\s\S]*jump/.test(linked.text.slice(0, linked.text.indexOf('label two'))),
+      linked.text)
+    check('every scene but the last is pointed at the next',
+      linked.text.includes('    jump two') && linked.text.includes('    jump three'),
+      linked.text)
+    check('and the last is left holding its placeholder',
+      /label three:\s*\n\s+pass\s*$/.test(linked.text.trim() + String.fromCharCode(10)), linked.text)
+    check('so nothing has both', !/pass\s*\n\s*jump/.test(linked.text), linked.text)
+
+    // The one from a real project. Reorder often enough and the scene that
+    // ends up last still carries a jump written when it was not, pointing
+    // backwards into the middle of the file: a loop the outline cannot show.
+    const stale = lines(
+      'label one:',
+      '    pass',
+      '    jump two',
+      '',
+      'label two:',
+      '    pass',
+      '    jump three',
+      '',
+      'label three:',
+      '    pass',
+      '    jump two'
+    )
+    const fixed = relinkLinear(stale)
+    check('the last scene loses a jump that points back into the file',
+      !/label three:[\s\S]*jump/.test(fixed.text), fixed.text)
+    check('and says so', fixed.warnings.some((w) => w.includes('last scene in the file')),
+      JSON.stringify(fixed.warnings))
+    check('while the scenes above it keep theirs',
+      fixed.text.includes('    jump two') && fixed.text.includes('    jump three'), fixed.text)
+
+    // A jump out of the file is how one episode leads to the next, and this
+    // knows nothing about the files it cannot see.
+    const onwards = lines('label one:', '    pass', '    jump EPISODE_2_START')
+    const kept = relinkLinear(onwards)
+    check('a jump out of the file is left alone',
+      kept.text.includes('jump EPISODE_2_START'), kept.text)
+  }
+
+  console.log('\n[renaming a scene, and everything that points at it]')
+  {
+    const lines = (...parts: string[]): string => parts.join(String.fromCharCode(10)) + String.fromCharCode(10)
+
+    const script = lines(
+      'label ch2_yard:',
+      '    ava "Out here."',
+      '    jump ch2_yard_night',
+      '',
+      'label ch2_yard_night:',
+      '    ava "Later, in the yard."',
+      '    return',
+      '',
+      'label elsewhere:',
+      '    "They talked about the yard."',
+      '    call ch2_yard from _call_1',
+      '    jump ch2_yard'
+    )
+
+    const done = renameLabelIn(script, 'ch2_yard', 'CH2_THE_YARD')
+    check('the label itself is renamed',
+      done.text.includes('label CH2_THE_YARD:'), done.text)
+    check('and every jump that reaches it',
+      done.text.includes('    jump CH2_THE_YARD') &&
+      !/jump ch2_yard$/m.test(done.text), done.text)
+    // Ren'Py writes `call X from Y` when it needs somewhere to return to.
+    check('a call keeps the label it returns to',
+      done.text.includes('    call CH2_THE_YARD from _call_1'), done.text)
+    // The mistake a plain search and replace makes.
+    check('a longer label that starts the same is untouched',
+      done.text.includes('label ch2_yard_night:') &&
+      done.text.includes('    jump ch2_yard_night'), done.text)
+    check('and the word in a line of dialogue is left alone',
+      done.text.includes('"They talked about the yard."'), done.text)
+    // The label, the call and the jump. Not the one to ch2_yard_night, and not
+    // the sentence about the yard.
+    check('three lines changed and no more', done.lines === 3, String(done.lines))
+
+    // A label that takes parameters is still a label.
+    const withArgs = renameLabelIn(
+      lines('label greet(name="x"):', '    return'), 'greet', 'SAY_HELLO')
+    check('a label with parameters keeps them',
+      withArgs.text.includes('label SAY_HELLO(name="x"):'), withArgs.text)
+
+    // Nothing to do is not a rewrite.
+    const untouched = renameLabelIn(script, 'nobody_here', 'SOMETHING')
+    check('a name that is not there changes nothing',
+      untouched.text === script && untouched.lines === 0)
+
+    const crlf = 'label a:' + String.fromCharCode(13, 10) + '    jump a' + String.fromCharCode(13, 10)
+    const windows = renameLabelIn(crlf, 'a', 'B')
+    check('a CRLF file stays a CRLF file',
+      windows.text === 'label B:' + String.fromCharCode(13, 10) + '    jump B' +
+        String.fromCharCode(13, 10), JSON.stringify(windows.text))
+  }
+
+  console.log('\n[removing a beat the one above runs into]')
+  {
+    const lines = (...parts: string[]): string => parts.join(String.fromCharCode(10)) + String.fromCharCode(10)
+
+    // Every beat in a reordered episode ends by jumping to the next, because
+    // RW writes those itself. Refusing to remove a beat because of the app's
+    // own bookkeeping made every beat in such an episode permanent.
+    const script = lines(
+      'label one:',
+      '    ava "First."',
+      '    jump two',
+      '',
+      'label two:',
+      '    ava "Second."',
+      '    jump three',
+      '',
+      'label three:',
+      '    ava "Third."',
+      '    return'
+    )
+
+    const plan = planRemoveBeat({ source: script, label: 'two' })
+    check('the scene above is not counted as a blocker',
+      plan.referencedBy.length === 0, JSON.stringify(plan.referencedBy))
+    check('it is counted as one to repoint',
+      JSON.stringify(plan.retargeted) === '["one"]', JSON.stringify(plan.retargeted))
+
+    const cut = removeBeat({ source: script, label: 'two' })
+    check('so the beat can actually go', !cut.error, String(cut.error))
+    check('and the scene above now jumps past it',
+      cut.source.includes('    jump three') && !cut.source.includes('    jump two'), cut.source)
+    check('with the beat itself gone',
+      !cut.source.includes('label two:') && !cut.source.includes('Second.'), cut.source)
+
+    // Nothing after it: the jump goes rather than pointing at nothing.
+    const last = removeBeat({ source: script, label: 'three' })
+    check('removing the last scene takes the jump into it with it',
+      !last.error && !last.source.includes('jump three'), String(last.error) + last.source)
+    check('and leaves the scene above ending where it ends',
+      last.source.includes('    ava "Second."'), last.source)
+
+    // A jump that reaches past a scene is the writer skipping something on
+    // purpose, and is still not ours to move.
+    const skipping = lines(
+      'label one:',
+      '    ava "First."',
+      '    jump three',
+      '',
+      'label two:',
+      '    ava "Second."',
+      '',
+      'label three:',
+      '    ava "Third."',
+      '    return'
+    )
+    const refused = removeBeat({ source: skipping, label: 'three' })
+    check('a scene reached by a jump from further up is still refused',
+      !!refused.error, String(refused.error))
+    check('and nothing was written', refused.source === skipping)
   }
 
   console.log('\n[renaming a character in the script]')

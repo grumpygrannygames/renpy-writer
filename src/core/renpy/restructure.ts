@@ -59,6 +59,21 @@ function bodyIndent(doc: Doc, span: LabelSpan): string {
 function materialize(doc: Doc, span: LabelSpan, target: string): void {
   if (span.endKind !== 'fallthrough' || !target) return
   const indent = bodyIndent(doc, span)
+
+  // A scene with nothing in it is held open by `pass`, which is the app saying
+  // "nothing here yet" in a way Ren'Py can read. A scene that ends in a jump
+  // is held open by the jump, so the placeholder goes rather than sitting
+  // above it -- a beat reading `pass` and then `jump` says both at once.
+  for (let i = span.startLine; i < span.endLine; i++) {
+    const line = doc.lines[i]
+    if (!line || line.trim() === '') continue
+    if (line.trim() === 'pass') {
+      doc.lines[i] = `${indent}jump ${target}`
+      return
+    }
+    break
+  }
+
   // endLine is 1-indexed and inclusive, so this inserts straight after it.
   doc.lines.splice(span.endLine, 0, `${indent}jump ${target}`)
   doc.eols.splice(span.endLine, 0, nativeEol(doc))
@@ -111,6 +126,70 @@ function relinkLinear(text: string): { text: string; warnings: string[] } {
     }
     if (!changed) break
   }
+
+  /*
+   * Placeholders that are no longer placeholding.
+   *
+   * `pass` is the app saying "nothing here yet" in a way Ren'Py can read. Once
+   * a scene ends in a jump the jump holds it open, and a beat reading `pass`
+   * and then `jump` says both at once -- which is what every reordered episode
+   * written before this looks like.
+   *
+   * Only a `pass` that is the first thing under the label, and only when
+   * something else is under there too: `pass` inside a menu choice or an else
+   * is the only thing keeping that block legal.
+   */
+  for (;;) {
+    const spans = spansOf(doc)
+    let dropped = false
+    for (const span of spans) {
+      let first = -1
+      for (let i = span.startLine; i < span.endLine; i++) {
+        if (doc.lines[i]?.trim()) {
+          first = i
+          break
+        }
+      }
+      if (first === -1 || doc.lines[first].trim() !== 'pass') continue
+      // Something else under the label, or the placeholder is still needed.
+      let more = false
+      for (let i = first + 1; i < span.endLine; i++) {
+        if (doc.lines[i]?.trim()) {
+          more = true
+          break
+        }
+      }
+      if (!more) continue
+      doc.lines.splice(first, 1)
+      doc.eols.splice(first, 1)
+      dropped = true
+      break
+    }
+    if (!dropped) break
+  }
+
+  /*
+   * The last scene has nothing to be pointed at, and the loop above leaves it
+   * alone -- which is how it ends up carrying a jump written when it was not
+   * last. Reorder a few times and the final scene jumps backwards into the
+   * middle of the file: a loop, and one the outline cannot show you.
+   *
+   * A jump out of the file is left alone. That is how one episode leads to the
+   * next, and this knows nothing about the files it cannot see.
+   */
+  const spans = spansOf(doc)
+  const last = spans[spans.length - 1]
+  if (last && last.endKind === 'jump' && last.trailingJump) {
+    const staysHere = spans.some((sp) => sp.label === last.trailingJump)
+    if (staysHere) {
+      warnings.push(
+        `${last.label} no longer jumps to ${last.trailingJump}: it is the last scene in the file.`
+      )
+      doc.lines.splice(last.endLine - 1, 1)
+      doc.eols.splice(last.endLine - 1, 1)
+    }
+  }
+
   return { text: join(doc), warnings }
 }
 
@@ -172,8 +251,23 @@ export interface RemoveBeatInput {
 export interface RemoveBeatPlan {
   /** How many lines would go, blank ones after the block included. */
   lines: number
-  /** Labels that jump or call this one, wherever they are. */
+  /**
+   * Labels that jump or call this one and cannot simply be repointed: a jump
+   * from inside a menu or an if block, or one in another file. Removal is
+   * refused while there are any.
+   */
   referencedBy: string[]
+  /**
+   * Labels in this file whose closing `jump` lands here, and which will be
+   * pointed at whatever follows instead.
+   *
+   * A closing jump says "and then this scene", which is a statement about
+   * order rather than a decision -- and RW writes these itself whenever beats
+   * are reordered. Refusing to remove a beat because the app's own
+   * bookkeeping mentions it would make every beat in a reordered episode
+   * permanent.
+   */
+  retargeted: string[]
   /**
    * When the scene before this one runs straight into it, what it will run
    * into once this is gone -- or null when there is nothing after it.
@@ -203,28 +297,62 @@ const REFERS_TO = (label: string): RegExp =>
  * nothing about the one it lives in. Looking only at the file being edited
  * would miss exactly the references most likely to be forgotten.
  */
+interface Reference {
+  /** The label the reference is written in. */
+  label: string
+  /** The file it lives in, or null for the one being edited. */
+  fileName: string | null
+  /**
+   * Whether this is the scene immediately above, ending by jumping into the
+   * one below it.
+   *
+   * That is bookkeeping rather than a decision: RW writes exactly this line
+   * itself whenever beats are reordered, to keep file order and story order
+   * agreeing. It can be repointed at whatever comes next.
+   *
+   * A jump that reaches past a scene to a later one is the writer skipping
+   * something on purpose, and a jump from inside a menu or an if block is a
+   * branch. Neither is ours to move.
+   */
+  trailing: boolean
+}
+
 function referencesTo(
   label: string,
   own: Doc,
   ownSpan: LabelSpan,
   elsewhere: Array<{ fileName: string; text: string }>
-): string[] {
-  const found: string[] = []
+): Reference[] {
+  const found: Reference[] = []
   const pattern = REFERS_TO(label)
 
-  const scan = (doc: Doc, where: string, skip?: LabelSpan): void => {
+  const scan = (doc: Doc, where: string | null, skip?: LabelSpan): void => {
     const spans = spansOf(doc)
-    for (const span of spans) {
-      if (skip && span.label === skip.label) continue
+    spans.forEach((span, i) => {
+      if (skip && span.label === skip.label) return
       const body = doc.lines.slice(span.startLine - 1, span.endLine).join('\n')
-      if (pattern.test(body)) found.push(where ? `${span.label} (${where})` : span.label)
-    }
+      if (!pattern.test(body)) return
+      found.push({
+        label: span.label,
+        fileName: where,
+        // Only the scene directly above, closing with a jump into this one.
+        trailing:
+          where === null &&
+          span.endKind === 'jump' &&
+          span.trailingJump === label &&
+          spans[i + 1]?.label === label
+      })
+    })
   }
 
-  scan(own, '', ownSpan)
+  scan(own, null, ownSpan)
   for (const other of elsewhere) scan(split(other.text), other.fileName)
   return found
 }
+
+/** How a reference reads in a sentence. */
+const nameOf = (r: Reference): string =>
+  r.fileName ? `${r.label} (${r.fileName})` : r.label
 
 /**
  * What removing a beat would cost, without removing anything.
@@ -239,6 +367,7 @@ export function planRemoveBeat(input: RemoveBeatInput): RemoveBeatPlan {
     return {
       lines: 0,
       referencedBy: [],
+      retargeted: [],
       runsIntoInstead: null,
       error: `${input.label} is not in this file.`
     }
@@ -253,9 +382,13 @@ export function planRemoveBeat(input: RemoveBeatInput): RemoveBeatPlan {
       ? { from: before.label, to: after ? after.label : null }
       : null
 
+  const references = referencesTo(input.label, doc, span, input.jumpsFrom ?? [])
   return {
     lines: to - from,
-    referencedBy: referencesTo(input.label, doc, span, input.jumpsFrom ?? []),
+    // A closing jump in this same file can be repointed; anything else is the
+    // writer's own control flow, or lives in a file this cannot rewrite.
+    referencedBy: references.filter((r) => !r.trailing || r.fileName !== null).map(nameOf),
+    retargeted: references.filter((r) => r.trailing && r.fileName === null).map((r) => r.label),
     runsIntoInstead
   }
 }
@@ -285,7 +418,40 @@ export function removeBeat(input: RemoveBeatInput): RemoveBeatResult {
   }
 
   const doc = split(input.source)
-  const span = spansOf(doc).find((sp) => sp.label === input.label)!
+  let spans = spansOf(doc)
+  const index = spans.findIndex((sp) => sp.label === input.label)
+  const next = spans[index + 1]?.label ?? null
+
+  /*
+   * Scenes that ended by jumping here now end by jumping at whatever follows,
+   * which is what "and then that one" meant all along. When nothing follows in
+   * this file the jump goes entirely and the scene ends where it ends.
+   *
+   * Highest line first, so removing one does not move the next.
+   */
+  const closing = spans
+    .filter(
+      (sp, i) =>
+        sp.label !== input.label &&
+        sp.endKind === 'jump' &&
+        sp.trailingJump === input.label &&
+        // Only the scene directly above: see Reference.trailing.
+        spans[i + 1]?.label === input.label
+    )
+    .sort((a, b) => b.endLine - a.endLine)
+
+  for (const sp of closing) {
+    const at = sp.endLine - 1
+    if (next) {
+      doc.lines[at] = doc.lines[at].replace(/jump\s+[A-Za-z_]\w*/, `jump ${next}`)
+    } else {
+      doc.lines.splice(at, 1)
+      doc.eols.splice(at, 1)
+    }
+  }
+
+  spans = spansOf(doc)
+  const span = spans.find((sp) => sp.label === input.label)!
   const { from, to } = blockRange(doc, span)
   doc.lines.splice(from, to - from)
   doc.eols.splice(from, to - from)

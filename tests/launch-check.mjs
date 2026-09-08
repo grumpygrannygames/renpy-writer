@@ -3829,9 +3829,11 @@ app.whenReady().then(async () => {
         .find(b => b.textContent === 'Save').click();
       await wait(1000);
       const titles = Array.from(document.querySelectorAll('.pc-title')).map(e => e.textContent);
-      const card2 = Array.from(document.querySelectorAll('.plot-card'))
-        .find(c => c.getAttribute('data-label') === 'THEY_FIND_THE_LETTER');
-      return { stage: 'ok', titles, stillLabelled: !!card2 };
+      return {
+        stage: 'ok', titles,
+        labels: Array.from(document.querySelectorAll('.plot-card'))
+          .map(c => c.getAttribute('data-label')).filter(Boolean)
+      };
     })()`)
 
     check('a beat can be renamed from its window', renamed.stage === 'ok',
@@ -3839,13 +3841,37 @@ app.whenReady().then(async () => {
     check('and the card takes the new name',
       (renamed.titles ?? []).includes('THE LETTER ON THE TABLE'),
       JSON.stringify((renamed.titles ?? []).slice(-3)))
-    check('while the label in the script is left alone',
-      renamed.stillLabelled === true, String(renamed.stillLabelled))
+    // A beat's name is the label. Renaming it in the outline and leaving the
+    // script alone would give one scene two names, and the script is the one
+    // the game runs.
+    check('the label in the script is renamed to match',
+      (renamed.labels ?? []).includes('THE_LETTER_ON_THE_TABLE') &&
+      !(renamed.labels ?? []).includes('THEY_FIND_THE_LETTER'),
+      JSON.stringify((renamed.labels ?? []).slice(-4)))
 
     const outlineAfterRename = JSON.parse(await fs.readFile(outlineFile, 'utf8'))
     check('the new name is kept with the outline',
       outlineAfterRename.beats.some((b) => b.title === 'The letter on the table'),
       JSON.stringify(outlineAfterRename.beats.map((b) => b.title).slice(-3)))
+    check('and the outline knows the new label',
+      outlineAfterRename.beats.some((b) => b.label === 'THE_LETTER_ON_THE_TABLE'),
+      JSON.stringify(outlineAfterRename.beats.map((b) => b.label).slice(-3)))
+
+    // Whichever episode the board put it in: the point is that exactly one
+    // script has the scene, under its new name and not its old one.
+    const scriptsDir = path.join(root, 'game', 'scripts')
+    const everyScript = await Promise.all(
+      (await fs.readdir(scriptsDir))
+        .filter((f) => f.endsWith('.rpy'))
+        .map(async (f) => ({ f, text: await fs.readFile(path.join(scriptsDir, f), 'utf8') }))
+    )
+    const holding = everyScript.filter((s) => s.text.includes('label THE_LETTER_ON_THE_TABLE:'))
+    check('the script has the new scene, in exactly one file',
+      holding.length === 1, JSON.stringify(everyScript.map((s) => s.f)))
+    check('and the old name is gone from all of them',
+      everyScript.every((s) => !s.text.includes('THEY_FIND_THE_LETTER')),
+      JSON.stringify(everyScript.filter((s) => s.text.includes('THEY_FIND_THE_LETTER'))
+        .map((s) => s.f)))
 
     // Removing: offered for a beat nobody has written, refused for one in the
     // script, because a card is not a reason to delete a scene.
@@ -4172,7 +4198,7 @@ app.whenReady().then(async () => {
       const placeholder = input.value;
 
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
-        .call(input, 'The letter on the table');
+        .call(input, 'The kettle boils over');
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
 
@@ -4194,7 +4220,7 @@ app.whenReady().then(async () => {
     check('the placeholder name is selected, ready to be typed over',
       added.selected === true, String(added.placeholder))
     check('the new scene takes the name, upper-cased like the plot board writes them',
-      (added.labels ?? []).includes('THE_LETTER_ON_THE_TABLE'),
+      (added.labels ?? []).includes('THE_KETTLE_BOILS_OVER'),
       JSON.stringify((added.labels ?? []).slice(0, 4)))
     check('and Enter goes straight to writing it',
       added.started === true && added.focused === true,
@@ -4226,9 +4252,9 @@ app.whenReady().then(async () => {
     // Past the autosave.
     await sleep(3000)
     const source = await fs.readFile(chapter, 'utf8')
-    const beat = source.slice(source.indexOf('label THE_LETTER_ON_THE_TABLE:'))
+    const beat = source.slice(source.indexOf('label THE_KETTLE_BOILS_OVER:'))
       .split(/\r?\n/).slice(0, 4).join('\n')
-    check('the scene reached the script', source.includes('label THE_LETTER_ON_THE_TABLE:'),
+    check('the scene reached the script', source.includes('label THE_KETTLE_BOILS_OVER:'),
       'not in the file')
     check('with the line under it', /ava "She reads it twice and says nothing\."/.test(source),
       beat)
@@ -4241,12 +4267,12 @@ app.whenReady().then(async () => {
       Array.from(document.querySelectorAll('.mode-switch button'))
         .find(b => b.textContent === 'Plot')?.click();
       const card = await until(() => Array.from(document.querySelectorAll('.plot-card'))
-        .find(c => c.getAttribute('data-label') === 'THE_LETTER_ON_THE_TABLE'));
+        .find(c => c.getAttribute('data-label') === 'THE_KETTLE_BOILS_OVER'));
       return { there: !!card, title: card?.querySelector('.pc-title')?.textContent ?? null };
     })()`)
     check('the outline has the scene without being asked', inOutline.there === true,
       JSON.stringify(inOutline))
-    check('under the name that was typed', inOutline.title === 'THE LETTER ON THE TABLE',
+    check('under the name that was typed', inOutline.title === 'THE KETTLE BOILS OVER',
       String(inOutline.title))
 
     // --- a scene planned and not yet written ------------------------------
@@ -4263,7 +4289,7 @@ app.whenReady().then(async () => {
 
       const named = (name) => Array.from(document.querySelectorAll('.blk-label'))
         .find(el => el.querySelector('.blk-label-name')?.textContent === name);
-      const row = await until(() => named('THE_LETTER_ON_THE_TABLE'));
+      const row = await until(() => named('THE_KETTLE_BOILS_OVER'));
       if (!row) {
         return { stage: 'no such scene',
                  showing: Array.from(document.querySelectorAll('.blk-label-name'))
@@ -4397,7 +4423,7 @@ app.whenReady().then(async () => {
     const afterRemoval = await fs.readFile(chapter, 'utf8')
     check('and the script', !afterRemoval.includes('WHAT_SHE_DOES_NEXT'), 'still in the file')
     check('while the scene before it stayed',
-      afterRemoval.includes('label THE_LETTER_ON_THE_TABLE:'), 'took the wrong one')
+      afterRemoval.includes('label THE_KETTLE_BOILS_OVER:'), 'took the wrong one')
 
     const outlineAfter = JSON.parse(
       await fs.readFile(path.join(root, '.renpywriter', 'outline.json'), 'utf8'))
@@ -4625,6 +4651,102 @@ app.whenReady().then(async () => {
       'the open tab wrote the deleted scene back')
     check('and nothing else came back with it', later === straightAfter,
       'the file changed after the deletion settled')
+  }
+
+  console.log('\n[a linear episode after a reorder]')
+  {
+    /*
+     * A linear project keeps file order and story order agreeing by writing
+     * the jumps itself. Doing that had three faults, all of them visible in a
+     * real project: the jump landed under the `pass` that was holding the
+     * empty scene open rather than replacing it; the scene that ended up last
+     * kept a jump written when it was not last, pointing backwards into the
+     * middle of the file; and every beat then had something jumping to it, so
+     * none of them could be removed.
+     */
+    const linear = await js(`(async () => {${UNTIL}
+      const root = ${JSON.stringify(root)};
+      const opened = await window.api.openProject(root);
+      await window.api.updateSettings(root, { ...opened.project.settings, linear: true });
+
+      const episode = opened.episodes.find(e => e.fileName === 'chapter_2.rpy');
+      if (!episode) return { stage: 'no chapter_2' };
+      const mine = opened.beats
+        .filter(b => b.episodeId === episode.id && b.label)
+        .sort((a, b) => a.order - b.order);
+      if (mine.length < 4) return { stage: 'too few beats', beats: mine.length };
+
+      // Send the last scene to the top, twice over, which is what leaves a
+      // stale jump behind.
+      await window.api.moveBeat(root, {
+        label: mine[mine.length - 1].label, fromEpisodeId: episode.id,
+        toEpisodeId: episode.id, toIndex: 0
+      });
+      await wait(600);
+      const after = await window.api.openProject(root);
+      const again = after.beats
+        .filter(b => b.episodeId === episode.id && b.label)
+        .sort((a, b) => a.order - b.order);
+      await window.api.moveBeat(root, {
+        label: again[again.length - 1].label, fromEpisodeId: episode.id,
+        toEpisodeId: episode.id, toIndex: 1
+      });
+      await wait(600);
+
+      // And put the project back the way the rest of this run expects it.
+      await window.api.updateSettings(root, { ...opened.project.settings, linear: false });
+      return { stage: 'ok' };
+    })()`)
+    check('a linear episode can be reordered', linear.stage === 'ok', JSON.stringify(linear))
+
+    const chapter = await fs.readFile(path.join(root, 'game', 'scripts', 'chapter_2.rpy'), 'utf8')
+    const rows = chapter.split(/\r?\n/)
+
+    // "Nothing here yet" sitting directly above "and then go there".
+    const bothAtOnce = rows.filter(
+      (row, i) => row.trim() === 'pass' && (rows[i + 1] ?? '').trim().startsWith('jump ')
+    )
+    check('no scene says both "nothing here yet" and "go there"',
+      bothAtOnce.length === 0, JSON.stringify(bothAtOnce.slice(0, 3)))
+
+    const labels = rows
+      .map((row) => row.match(/^label\s+([A-Za-z_]\w*)/)?.[1])
+      .filter(Boolean)
+    const closing = rows
+      .map((row) => row.trim().match(/^jump\s+([A-Za-z_]\w*)$/)?.[1])
+      .filter(Boolean)
+    const lastJump = closing[closing.length - 1]
+    const lastLabel = labels[labels.length - 1]
+    // The final scene may lead to another file, but never back into this one.
+    const afterLast = rows.slice(rows.findIndex((r) => r.startsWith(`label ${lastLabel}:`)))
+    const jumpsBack = afterLast.some(
+      (row) => labels.includes(row.trim().match(/^jump\s+([A-Za-z_]\w*)$/)?.[1] ?? '')
+    )
+    check('and the last scene does not jump back into the file',
+      jumpsBack === false, `${lastLabel} -> ${lastJump}`)
+
+    // Which is the whole reason a beat could not be removed: everything had
+    // something jumping to it.
+    const removable = await js(`(async () => {${UNTIL}
+      const root = ${JSON.stringify(root)};
+      const opened = await window.api.openProject(root);
+      const episode = opened.episodes.find(e => e.fileName === 'chapter_2.rpy');
+      const mine = opened.beats
+        .filter(b => b.episodeId === episode.id && b.label)
+        .sort((a, b) => a.order - b.order);
+      // One in the middle, which the scene above it now jumps into.
+      const target = mine[2];
+      const plan = await window.api.planRemoveBeat(root, target.id);
+      return {
+        stage: 'ok', label: target.label,
+        blocked: plan.referencedBy, repoints: plan.retargeted
+      };
+    })()`)
+
+    check('a beat in a relinked episode is not blocked by the app own jumps',
+      (removable.blocked ?? ['?']).length === 0, JSON.stringify(removable))
+    check('the scene above it is repointed instead',
+      (removable.repoints ?? []).length === 1, JSON.stringify(removable.repoints))
   }
 
   console.log(`\n${pass} passed, ${fail} failed`)

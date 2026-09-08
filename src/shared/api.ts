@@ -209,6 +209,11 @@ export interface RemoveBeatPlan {
   fileName: string | null
   /** Labels that jump or call this one, wherever they live. */
   referencedBy: string[]
+  /**
+   * Scenes in the same file whose closing jump lands on this one, and which
+   * will be pointed at whatever follows instead.
+   */
+  retargeted: string[]
   /** When the scene before ran into this one, what it will run into instead. */
   runsIntoInstead: { from: string; to: string | null } | null
   /** True when the beat has no label, so removing it touches no script at all. */

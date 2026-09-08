@@ -20,6 +20,7 @@ import type {
 } from '@shared/types'
 import { DRAFTS_DIR } from '@shared/types'
 import { LocalWorkspaceProvider } from '@core/workspace/LocalWorkspaceProvider'
+import type { WorkspaceProvider } from '@core/workspace/WorkspaceProvider'
 import { checkRenpyRoot, listScriptFiles, toFileSlug } from '@core/renpy/detect'
 import { parseEpisode } from '@core/renpy/labels'
 import {
@@ -51,6 +52,7 @@ import { scanCharacters } from '@core/renpy/characters'
 import { defineCharacter } from '@core/renpy/define'
 import { renameCharacter } from '@core/renpy/rename'
 import { renameVariable } from '@core/renpy/renameVariable'
+import { renameLabelEverywhere } from '@core/renpy/renameLabel'
 import { readPortrait, resolveImageName } from '@core/renpy/images'
 import {
   newSidecarProject,
@@ -588,6 +590,34 @@ export function registerHandlers(register: Register, host: HostServices): void {
     return /^[0-9]/.test(slug) ? `BEAT_${slug}` : slug || 'NEW_BEAT'
   }
 
+  /**
+   * A label name made from what somebody typed, free everywhere in the
+   * project.
+   *
+   * Ren'Py labels are global, so a name is only free if it is free in every
+   * file. Compared without case: Ren'Py would take FOO and foo as two labels,
+   * being case-sensitive, but nobody reading the script would thank us.
+   */
+  const freeLabel = async (
+    provider: WorkspaceProvider,
+    sidecar: SidecarProject,
+    wanted: string,
+    except?: string
+  ): Promise<string> => {
+    const taken = new Set<string>()
+    for (const other of sidecar.episodes) {
+      const otherRel = relOf(sidecar.settings, other)
+      if (!(await provider.exists(otherRel))) continue
+      for (const span of parseEpisode(other.fileName, await provider.readText(otherRel)).labels) {
+        if (span.label !== except) taken.add(span.label.toLowerCase())
+      }
+    }
+    const base = toLabelName(wanted)
+    let label = base
+    for (let n = 2; taken.has(label.toLowerCase()); n++) label = `${base}_${n}`
+    return label
+  }
+
   register(IPC.createBeat, async (root: string, episodeId: string, title: string) => {
     const provider = ws(root)
     const sidecar = await readSidecarProject(provider)
@@ -604,23 +634,7 @@ export function registerHandlers(register: Register, host: HostServices): void {
       throw new Error(`${episode.fileName} is not in the game folder.`)
     }
 
-    // Ren'Py labels are global, so the name has to be free everywhere, not
-    // just in this file.
-    const taken = new Set<string>()
-    for (const other of sidecar.episodes) {
-      const otherRel = relOf(sidecar.settings, other)
-      if (!(await provider.exists(otherRel))) continue
-      for (const span of parseEpisode(other.fileName, await provider.readText(otherRel)).labels) {
-        taken.add(span.label)
-      }
-    }
-
-    // Compared without case. Ren'Py would allow FOO and foo side by side,
-    // being case-sensitive, but nobody reading the script would thank us.
-    const lowered = new Set([...taken].map((name) => name.toLowerCase()))
-    const base = toLabelName(named)
-    let label = base
-    for (let n = 2; lowered.has(label.toLowerCase()); n++) label = `${base}_${n}`
+    const label = await freeLabel(provider, sidecar, named)
 
     // The label is written into the script, not just the outline. A beat that
     // exists only in the outline opens into a script with nothing of it
@@ -642,10 +656,30 @@ export function registerHandlers(register: Register, host: HostServices): void {
       const description =
         changes.description === undefined ? beat.description : changes.description
 
+      /*
+       * A beat's name is the label. Renaming it in the outline and leaving the
+       * script alone gives two names for one scene, and the outline is the one
+       * that is wrong -- the script is what the game runs.
+       *
+       * Every jump and call that reaches the scene comes along, wherever in
+       * the project it is written.
+       */
+      let label = beat.label
+      if (beat.label && title !== beat.title) {
+        const sidecar = await readSidecarProject(provider)
+        if (!sidecar) throw new Error(`No project found at ${root}`)
+        const wanted = await freeLabel(provider, sidecar, title, beat.label)
+        if (wanted !== beat.label) {
+          const renamed = await renameLabelEverywhere(root, provider, beat.label, wanted)
+          if (!renamed.ok) throw new Error(renamed.reason ?? 'That scene could not be renamed.')
+          label = wanted
+        }
+      }
+
       await writeOutline(provider, {
         version: 1,
         beats: outline.beats.map((b) =>
-          b.id === beatId ? { ...b, title, description } : b
+          b.id === beatId ? { ...b, title, description, label } : b
         )
       })
       return loadProject(host, root)
