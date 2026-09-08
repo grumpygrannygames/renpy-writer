@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import type { CharacterNote } from '@shared/types'
+import { characterVarName, defineLine } from '@shared/renpy/names'
 import { useCast, newId } from '../useCast'
+import { useStore } from '../state/store'
 
 /**
  * Creating a profile is where script variables get claimed. Selecting none
@@ -18,7 +20,12 @@ export default function AddCharacterDialog({
   onCreate: (note: CharacterNote) => void
 }) {
   const { unassigned } = useCast()
+  const scanned = useStore((s) => s.characters)
+  const defineScriptCharacter = useStore((s) => s.defineScriptCharacter)
   const [picked, setPicked] = useState<string[]>(preselect ? [preselect] : [])
+  const [alsoScript, setAlsoScript] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [name, setName] = useState(
     preselect ? (unassigned.find((c) => c.varName === preselect)?.name ?? '') : ''
   )
@@ -46,6 +53,37 @@ export default function AddCharacterDialog({
   }
 
   const finalName = name.trim() || 'New character'
+
+  // Only for somebody the script has never heard of. Ticking variables says
+  // they are already defined, and defining them twice is how a game stops
+  // loading.
+  const canDefine = picked.length === 0
+  // A profile can be nameless and fixed later. A line in the script cannot:
+  // "New character" would be written into the game as somebody's name.
+  const needsName = canDefine && alsoScript && !name.trim()
+  const preview = useMemo(
+    () => defineLine(characterVarName(finalName, scanned.map((c) => c.varName)), finalName),
+    [finalName, scanned]
+  )
+
+  async function create(): Promise<void> {
+    setError(null)
+    if (!canDefine || !alsoScript) {
+      onCreate({ id: newId(), varNames: picked, name: finalName })
+      return
+    }
+    setBusy(true)
+    try {
+      const written = await defineScriptCharacter(finalName)
+      if (written.error || !written.varName) {
+        setError(written.error ?? 'Could not write that definition.')
+        return
+      }
+      onCreate({ id: newId(), varNames: [written.varName], name: finalName })
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -104,15 +142,49 @@ export default function AddCharacterDialog({
           )}
         </div>
 
+        {canDefine && (
+          <div className="field">
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={alsoScript}
+                onChange={(e) => setAlsoScript(e.target.checked)}
+              />
+              <span>Write them into the script as well</span>
+            </label>
+            {alsoScript ? (
+              <div className="hint">
+                Adds <code>{preview}</code> to the end of{' '}
+                <code>game/characters.rpy</code>, creating that file if it is not there.
+                Nothing else in it is touched.
+              </div>
+            ) : (
+              <div className="hint">
+                Notes only. They will not be able to speak until a definition exists.
+              </div>
+            )}
+          </div>
+        )}
+
+        {error && <div className="error">{error}</div>}
+
         <div className="actions-row">
-          <button onClick={onClose}>Cancel</button>
+          <button onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
           <button
             className="primary"
-            onClick={() =>
-              onCreate({ id: newId(), varNames: picked, name: finalName })
-            }
+            disabled={busy || needsName}
+            title={needsName ? 'Give them a name first.' : undefined}
+            onClick={() => void create()}
           >
-            Create {picked.length > 0 ? `with ${picked.length} variable${picked.length === 1 ? '' : 's'}` : 'notes-only'}
+            {busy
+              ? 'Writing...'
+              : picked.length > 0
+                ? `Create with ${picked.length} variable${picked.length === 1 ? '' : 's'}`
+                : alsoScript
+                  ? 'Create and define'
+                  : 'Create notes-only'}
           </button>
         </div>
       </div>

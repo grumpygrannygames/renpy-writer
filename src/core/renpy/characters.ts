@@ -11,7 +11,7 @@ import {
 
 const SKIP_DIRS = new Set(['cache', 'saves', 'tl', 'audio', 'fonts', 'media', 'images', 'gui'])
 
-async function collectRpyFiles(dir: string, depth = 0): Promise<string[]> {
+export async function collectRpyFiles(dir: string, depth = 0): Promise<string[]> {
   if (depth > 3) return []
   let entries
   try {

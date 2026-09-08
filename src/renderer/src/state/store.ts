@@ -164,6 +164,8 @@ interface AppState {
 
   upsertCharacterNote: (note: CharacterNote) => void
   renameScriptCharacter: (varName: string, newName: string) => Promise<string | null>
+  /** Write a Character() definition for somebody the script does not have. */
+  defineScriptCharacter: (name: string) => Promise<{ varName?: string; error?: string }>
   upsertLocation: (location: LocationNote) => void
   upsertNote: (note: FreeNote) => void
   removeReferenceItem: (kind: 'characters' | 'locations' | 'notes', id: string) => void
@@ -614,6 +616,21 @@ export const useStore = create<AppState>((set, get) => ({
     // The rescan is authoritative whether or not the write succeeded.
     set({ characters: result.characters })
     return result.ok ? null : (result.reason ?? 'Could not rename that character.')
+  },
+
+  defineScriptCharacter: async (name) => {
+    const opened = get().opened
+    if (!opened) return { error: 'No project open.' }
+    const root = opened.project.renpyRoot
+    const result = await api.defineCharacter(root, name)
+    // The rescan is authoritative whether or not the write succeeded.
+    set({ characters: result.characters })
+    // Harmless unless that file happens to be open as an episode, in which
+    // case its editor is now a version behind and would write the definition
+    // straight back out again.
+    await reloadTabs(root, ['characters.rpy'], get, set)
+    if (!result.ok) return { error: result.reason ?? 'Could not write that definition.' }
+    return { varName: result.varName }
   },
 
   upsertCharacterNote: (note) =>

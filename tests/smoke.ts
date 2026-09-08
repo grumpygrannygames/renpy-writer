@@ -20,6 +20,8 @@ import { buildLinkIndex, parseLinks, linkedNames } from '../src/renderer/src/wik
 import { centreIndex } from '../src/renderer/src/anchor'
 import { shouldWriteReference } from '../src/renderer/src/state/referenceSave'
 import { renameCharacter } from '../src/core/renpy/rename'
+import { defineCharacter } from '../src/core/renpy/define'
+import { characterVarName, toVarName } from '../src/shared/renpy/names'
 import { resolveImageName, readPortrait } from '../src/core/renpy/images'
 import { imageNameAt } from '../src/renderer/src/imageHover'
 import { appendBeat, moveBeat, planRemoveBeat, removeBeat } from '../src/core/renpy/restructure'
@@ -743,6 +745,112 @@ async function main() {
     withQuote.find((c) => c.varName === 'ava')?.name === "O'Hara",
     withQuote.find((c) => c.varName === 'ava')?.name)
   await restore()
+
+  console.log('\n[naming a character the script has never heard of]')
+  {
+    check('a name becomes a variable', toVarName('Mara Kowalski') === 'mara_kowalski',
+      toVarName('Mara Kowalski'))
+    check('an apostrophe just goes', toVarName("O'Hara") === 'ohara', toVarName("O'Hara"))
+    // Folded rather than dropped: a Swedish writer gets asa, not sa.
+    check('accents fold to the letter underneath', toVarName('Asa Lindqvist') === 'asa_lindqvist',
+      toVarName('Asa Lindqvist'))
+    check('and so do Czech ones', toVarName('Bozena Nemcova') === 'bozena_nemcova',
+      toVarName('Bozena Nemcova'))
+    // Nothing to fold to. Ren'Py 7 runs on Python 2, where this would not even
+    // parse, so it falls back rather than writing a name that breaks the game.
+    check('a name outside the Latin alphabet falls back',
+      toVarName('\u85cd') === 'character', toVarName('\u85cd'))
+    check('a number cannot start a variable', toVarName('3 Sisters') === 'c_3_sisters',
+      toVarName('3 Sisters'))
+    // define class = Character(...) is a syntax error, not a character.
+    check('a Python keyword is stepped around', toVarName('Class') === 'class_',
+      toVarName('Class'))
+    check('a blank name still yields something usable', toVarName('   ') === 'character',
+      toVarName('   '))
+
+    check('a free name is used as it is',
+      characterVarName('Mara', ['ava', 'ben']) === 'mara')
+    check('a taken one is numbered',
+      characterVarName('Mara', ['mara']) === 'mara_2')
+    check('and keeps counting',
+      characterVarName('Mara', ['mara', 'mara_2', 'mara_3']) === 'mara_4')
+  }
+
+  console.log('\n[defining a character: the file RW writes to]')
+  {
+    const charactersRel = 'game/characters.rpy'
+    const charactersFile = path.join(SCRATCH, charactersRel)
+    await fs.rm(charactersFile, { force: true })
+
+    const first = await defineCharacter(SCRATCH, ws, 'Mara Kowalski')
+    check('the definition is written', first.ok, first.reason)
+    check('into game/characters.rpy', first.file === charactersRel, String(first.file))
+    check('which it had to create', first.created === true, String(first.created))
+    check('under a name made from theirs', first.varName === 'mara_kowalski',
+      String(first.varName))
+
+    const written = await fs.readFile(charactersFile, 'utf8')
+    check('the line reads as Ren.Py expects',
+      written.trim() === 'define mara_kowalski = Character("Mara Kowalski")', written.trim())
+    check('and the file ends in a newline', written.endsWith(String.fromCharCode(10)), JSON.stringify(written.slice(-2)))
+
+    // The point of all of it: the scanner now finds them.
+    const cast = await scanCharacters(SCRATCH)
+    const mara = cast.find((c) => c.varName === 'mara_kowalski')
+    check('a scan picks the new character up', mara?.name === 'Mara Kowalski', String(mara?.name))
+    check('and knows where they were written',
+      mara?.sourceFile === charactersRel, String(mara?.sourceFile))
+
+    const second = await defineCharacter(SCRATCH, ws, 'Ben Alder')
+    check('a second definition appends', second.ok && second.created === false,
+      String(second.reason))
+    const both = await fs.readFile(charactersFile, 'utf8')
+    check('without disturbing the first',
+      both.includes('define mara_kowalski = Character("Mara Kowalski")') &&
+      both.includes('define ben_alder = Character("Ben Alder")'), both)
+    check('one definition per line',
+      both.trim().split(String.fromCharCode(10)).length === 2, JSON.stringify(both))
+
+    // ava is defined in the sample script, so a second Ava cannot be ava.
+    const clash = await defineCharacter(SCRATCH, ws, 'Ava')
+    check('a name already defined in the script is numbered rather than repeated',
+      clash.varName === 'ava_2', String(clash.varName))
+
+    // Wider than the cast: any define at all is a name that is taken.
+    await fs.appendFile(charactersFile, 'define muriel = 3' + String.fromCharCode(10), 'utf8')
+    const nonCharacter = await defineCharacter(SCRATCH, ws, 'Muriel')
+    check('and so is a name bound to something that is not a character',
+      nonCharacter.varName === 'muriel_2', String(nonCharacter.varName))
+
+    const quoted = await defineCharacter(SCRATCH, ws, 'The ' + String.fromCharCode(34) + 'Doctor' + String.fromCharCode(34))
+    check('a quote in the name is escaped', quoted.ok, quoted.reason)
+    const backAgain = await scanCharacters(SCRATCH)
+    check('so the name scans back as it was typed',
+      backAgain.find((c) => c.varName === quoted.varName)?.name === 'The ' + String.fromCharCode(34) + 'Doctor' + String.fromCharCode(34),
+      String(backAgain.find((c) => c.varName === quoted.varName)?.name))
+
+    const blank = await defineCharacter(SCRATCH, ws, '   ')
+    check('an empty name is refused', !blank.ok, blank.reason)
+    const twoLines = await defineCharacter(SCRATCH, ws, 'Mara' + String.fromCharCode(10) + 'Kowalski')
+    check('and so is one that spans lines', !twoLines.ok, twoLines.reason)
+
+    // A project written on Windows keeps its line endings.
+    await fs.writeFile(charactersFile,
+      'define solo = Character("Solo")' + String.fromCharCode(13, 10), 'utf8')
+    await defineCharacter(SCRATCH, ws, 'Nadia Vero')
+    const windows = await fs.readFile(charactersFile, 'utf8')
+    check('a CRLF file gains a CRLF line, not a stray LF',
+      windows.split(String.fromCharCode(10)).every((l) => l === '' || l.endsWith(String.fromCharCode(13))), JSON.stringify(windows))
+
+    // A file that never ended in a newline still gets a line of its own.
+    await fs.writeFile(charactersFile, 'define solo = Character("Solo")', 'utf8')
+    await defineCharacter(SCRATCH, ws, 'Nadia Vero')
+    const joined = await fs.readFile(charactersFile, 'utf8')
+    check('a file with no closing newline is not run into',
+      joined.includes('("Solo")' + String.fromCharCode(10) + 'define'), JSON.stringify(joined))
+
+    await fs.rm(charactersFile, { force: true })
+  }
 
   console.log('\n[image resolution for scene/show]')
   const TC = EPISODIC

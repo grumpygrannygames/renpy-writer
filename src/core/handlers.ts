@@ -48,6 +48,7 @@ import {
 import type { Decision } from '@core/git/conflicts'
 import { cliRunner } from '@core/passes/runner'
 import { scanCharacters } from '@core/renpy/characters'
+import { defineCharacter } from '@core/renpy/define'
 import { renameCharacter } from '@core/renpy/rename'
 import { readPortrait, resolveImageName } from '@core/renpy/images'
 import {
@@ -361,6 +362,13 @@ export function registerHandlers(register: Register, host: HostServices): void {
       return { ...result, characters: await scanCharacters(root) }
     }
   )
+
+  register(IPC.defineCharacter, async (root: string, name: string) => {
+    const result = await defineCharacter(root, ws(root), name)
+    // Rescan either way, so the cast on screen is the cast in the files --
+    // including the one just written, which is the whole point of this.
+    return { ...result, characters: await scanCharacters(root) }
+  })
 
   register(IPC.resolveImage, (root: string, name: string) =>
     resolveImageName(root, name))

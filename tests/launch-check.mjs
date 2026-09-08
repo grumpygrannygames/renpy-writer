@@ -241,7 +241,7 @@ app.whenReady().then(async () => {
   check('React mounted', shell.mounted)
   check('project gate rendered', shell.gate)
   check('heading reads the app name', shell.heading === 'Ren’Py Writer', String(shell.heading))
-  check('api exposes all 36 methods', shell.apiMethods === 36, String(shell.apiMethods))
+  check('api exposes all 37 methods', shell.apiMethods === 37, String(shell.apiMethods))
 
   console.log('\n[a broken bridge says so]')
   {
@@ -3744,6 +3744,154 @@ app.whenReady().then(async () => {
       !(done.labels ?? []).includes('ch2_kettle'), JSON.stringify(done.labels))
     check('the file got shorter, not longer', after.length < before.length,
       `${before.length} -> ${after.length}`)
+  }
+
+  console.log('\n[a character who is not in the script yet]')
+  {
+    // Somebody typed into the reference panel has no Character() definition,
+    // so they cannot speak. Writing that definition by hand is the one bit of
+    // Ren'Py the panel used to leave to the writer.
+    const charactersFile = path.join(root, 'game', 'characters.rpy')
+    await fs.rm(charactersFile, { force: true })
+
+    const offered = await js(`(async () => {${UNTIL}
+      const setVal = (el, v) => {
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(el, v);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      if (!document.querySelector('.refpanel')) {
+        Array.from(document.querySelectorAll('button'))
+          .find(b => b.textContent === 'Reference').click();
+        await until(() => document.querySelector('.refpanel'));
+      }
+      Array.from(document.querySelectorAll('.ref-actions button'))
+        .find(b => b.textContent === 'Add character').click();
+      await until(() => document.querySelector('.modal .field input'));
+
+      // Nothing typed yet. A nameless profile is fine; a nameless line in the
+      // script is not.
+      const primary = () => Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .find(b => b.textContent.indexOf('Create') === 0);
+      const blockedWhileBlank = primary()?.disabled ?? null;
+
+      setVal(document.querySelector('.modal .field input'), 'Mara Kowalski');
+      await wait(200);
+
+      // Nothing ticked in the variable list, so the offer is on the table.
+      const offer = Array.from(document.querySelectorAll('.modal label.check'))
+        .find(l => l.textContent.indexOf('script') !== -1);
+      const ticked = offer?.querySelector('input')?.checked ?? null;
+      const preview = document.querySelector('.modal .hint code')?.textContent ?? null;
+      const label = Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .find(b => b.textContent.indexOf('Create') === 0)?.textContent ?? null;
+
+      return { stage: 'ok', ticked, preview, label, blockedWhileBlank };
+    })()`)
+
+    // The dialog as it stands, offer and all. Checks read the DOM, which has
+    // been known to look perfect while the thing on screen was unreadable.
+    const dialogShots = path.join(os.tmpdir(), 'rpw-shots')
+    await fs.mkdir(dialogShots, { recursive: true })
+    await fs.writeFile(
+      path.join(dialogShots, 'define-character.png'),
+      (await win.webContents.capturePage()).toPNG()
+    )
+    console.log('  screenshot: ' + path.join(dialogShots, 'define-character.png'))
+
+    const made = await js(`(async () => {${UNTIL}
+      Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .find(b => b.textContent.indexOf('Create') === 0).click();
+      await until(() => document.querySelector('.chareditor'));
+      await wait(600);
+      return {
+        variables: Array.from(document.querySelectorAll('.ce-varlist li .cv-name'))
+          .map(e => e.textContent),
+        heading: document.querySelector('.ce-head h1')?.textContent ?? null
+      };
+    })()`)
+
+    check('the offer is made for a character with no variables', offered.ticked === true,
+      JSON.stringify(offered).slice(0, 200))
+    check('and shows the exact line it will write',
+      (offered.preview ?? '') === 'define mara_kowalski = Character("Mara Kowalski")',
+      String(offered.preview))
+    check('a nameless character cannot be written into the script',
+      offered.blockedWhileBlank === true, String(offered.blockedWhileBlank))
+    check('the button says what it is about to do',
+      (offered.label ?? '').indexOf('define') !== -1, String(offered.label))
+
+    const written = await fs.readFile(charactersFile, 'utf8')
+    check('game/characters.rpy was created with the definition',
+      written.includes('define mara_kowalski = Character("Mara Kowalski")'), written)
+
+    // The point of doing it here rather than by hand: the cast on screen knows
+    // about them straight away, with no reopening of the project.
+    check('and the profile is holding the new variable',
+      (made.variables ?? []).includes('mara_kowalski'), JSON.stringify(made.variables))
+    check('under the name that was typed', made.heading === 'Mara Kowalski',
+      String(made.heading))
+
+    // Untick it, and nothing is written.
+    const notesOnly = await js(`(async () => {${UNTIL}
+      const setVal = (el, v) => {
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(el, v);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      Array.from(document.querySelectorAll('.ref-actions button'))
+        .find(b => b.textContent === 'Add character').click();
+      await until(() => document.querySelector('.modal .field input'));
+      setVal(document.querySelector('.modal .field input'), 'Ivy Sole');
+      await wait(200);
+
+      const box = Array.from(document.querySelectorAll('.modal label.check'))
+        .find(l => l.textContent.indexOf('script') !== -1)?.querySelector('input');
+      box.click();
+      await wait(250);
+      const label = Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .find(b => b.textContent.indexOf('Create') === 0)?.textContent ?? null;
+
+      Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .find(b => b.textContent.indexOf('Create') === 0).click();
+      await until(() => (document.querySelector('.ce-head h1')?.textContent ?? '') === 'Ivy Sole');
+      await wait(600);
+
+      return {
+        stage: 'ok', label,
+        variables: Array.from(document.querySelectorAll('.ce-varlist li .cv-name'))
+          .map(e => e.textContent)
+      };
+    })()`)
+
+    check('the offer can be declined', (notesOnly.label ?? '').indexOf('notes-only') !== -1,
+      String(notesOnly.label))
+    check('and then nobody is written into the script',
+      (notesOnly.variables ?? []).length === 0, JSON.stringify(notesOnly.variables))
+    const still = await fs.readFile(charactersFile, 'utf8')
+    check('the file gained nothing from the declined one',
+      !still.includes('ivy_sole'), still)
+    check('and the one before it is still there',
+      still.includes('define mara_kowalski'), still)
+
+    // Both profiles are kept, and only the defined one claims a variable.
+    await sleep(1800)
+    const saved = await js(`window.api.readReference(${JSON.stringify(root)})`)
+    const mara = (saved.characters ?? []).find((c) => c.name === 'Mara Kowalski')
+    const ivy = (saved.characters ?? []).find((c) => c.name === 'Ivy Sole')
+    check('the written character is saved with their variable',
+      JSON.stringify(mara?.varNames ?? []) === JSON.stringify(['mara_kowalski']),
+      JSON.stringify(mara?.varNames))
+    check('and the notes-only one with none',
+      JSON.stringify(ivy?.varNames ?? []) === '[]', JSON.stringify(ivy?.varNames))
+
+    // Leave the panel as it was found.
+    await js(`(async () => {${UNTIL}
+      if (document.querySelector('.refpanel')) {
+        Array.from(document.querySelectorAll('button'))
+          .find(b => b.textContent === 'Reference').click();
+        await wait(400);
+      }
+    })()`)
+    await fs.rm(charactersFile, { force: true })
   }
 
   console.log('\n[a deleted scene stays deleted]')

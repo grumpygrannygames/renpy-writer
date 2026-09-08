@@ -82,6 +82,7 @@ const WRITES: ReadonlySet<string> = new Set([
   IPC.removeProject,
   IPC.updateSettings,
   IPC.renameCharacter,
+  IPC.defineCharacter,
   IPC.writeReference,
   IPC.createEpisode,
   IPC.reorderEpisodes,

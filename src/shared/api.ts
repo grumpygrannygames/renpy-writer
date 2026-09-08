@@ -311,6 +311,23 @@ export interface RenpyWriterApi {
     newName: string
   ): Promise<{ ok: boolean; reason?: string; characters: DiscoveredCharacter[] }>
 
+  /**
+   * Write `define x = Character("Name")` into game/characters.rpy for someone
+   * who is not in the script yet, creating that file if it is missing.
+   * Returns the variable it chose and the cast as it now reads.
+   */
+  defineCharacter(
+    renpyRoot: string,
+    name: string
+  ): Promise<{
+    ok: boolean
+    reason?: string
+    varName?: string
+    file?: string
+    created?: boolean
+    characters: DiscoveredCharacter[]
+  }>
+
   readReference(renpyRoot: string): Promise<Reference>
   writeReference(renpyRoot: string, reference: Reference): Promise<void>
 
@@ -397,6 +414,7 @@ export const IPC = {
   readPortrait: 'project:portrait',
   resolveImage: 'project:image',
   renameCharacter: 'project:renameCharacter',
+  defineCharacter: 'project:defineCharacter',
   readReference: 'reference:read',
   writeReference: 'reference:write',
   createEpisode: 'episodes:create',
