@@ -2,6 +2,8 @@ import { useState } from 'react'
 import type { LabelEndKind } from '@shared/types'
 import { useStore } from '../state/store'
 import type { RemoveBeatPlan } from '@shared/api'
+import RemoveBeatDialog from './RemoveBeatDialog'
+import { beatName } from '../beatName'
 
 const END_LABEL: Record<LabelEndKind, string> = {
   jump: '',
@@ -27,16 +29,6 @@ interface DragState {
  * placed in another. Fall-through is written out as an explicit jump first, so
  * the story keeps running the same way whatever the new file order is.
  */
-/**
- * A beat's name as it should be read.
- *
- * Titles come from Ren'Py labels, which are written for the engine:
- * `D14_MORNING`. The underscores are punctuation the engine needs and a
- * person does not, so they are spaces here and the label itself is untouched.
- */
-export function beatName(title: string): string {
-  return title.replace(/_/g, ' ').toUpperCase()
-}
 
 export default function PlotBoard() {
   const opened = useStore((s) => s.opened)
@@ -440,66 +432,7 @@ export default function PlotBoard() {
       )}
 
       {removing && (
-        <div className="modal-backdrop" onClick={() => setRemoving(null)}>
-          <div className="modal remove-modal" onClick={(e) => e.stopPropagation()}>
-            <h2>Remove {beatName(removing.title)}?</h2>
-
-            {removing.plan.referencedBy.length > 0 ? (
-              <>
-                <p className="error">
-                  {removing.plan.referencedBy.length === 1
-                    ? 'Another scene jumps here'
-                    : `${removing.plan.referencedBy.length} other scenes jump here`}
-                  , so removing it would leave them going nowhere.
-                </p>
-                <ul className="rm-list">
-                  {removing.plan.referencedBy.map((who) => (
-                    <li key={who}>{who}</li>
-                  ))}
-                </ul>
-                <p className="hint">
-                  Point those somewhere else first, and this can go.
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="hint">
-                  <strong>{removing.plan.lines}</strong>{' '}
-                  {removing.plan.lines === 1 ? 'line' : 'lines'} will be removed from{' '}
-                  <code>{removing.plan.fileName}</code>. This writes to the script.
-                </p>
-                {removing.plan.runsIntoInstead && (
-                  <p className="hint">
-                    {beatName(removing.plan.runsIntoInstead.from)} runs straight into this
-                    scene, so afterwards it will run into{' '}
-                    {removing.plan.runsIntoInstead.to
-                      ? beatName(removing.plan.runsIntoInstead.to)
-                      : 'whatever follows the file'}{' '}
-                    instead.
-                  </p>
-                )}
-              </>
-            )}
-
-            <div className="actions-row">
-              <button onClick={() => setRemoving(null)}>
-                {removing.plan.referencedBy.length > 0 ? 'Close' : 'Keep it'}
-              </button>
-              {removing.plan.referencedBy.length === 0 && (
-                <button
-                  className="danger"
-                  onClick={() => {
-                    const id = removing.id
-                    setRemoving(null)
-                    void removeBeat(id)
-                  }}
-                >
-                  Remove it
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
+        <RemoveBeatDialog removing={removing} onClose={() => setRemoving(null)} />
       )}
 
       {busy && <div className="plot-busy">Rewriting script…</div>}

@@ -3,7 +3,7 @@ import ContextMenu, { type MenuItem } from './ContextMenu'
 import type { PassMode } from '@shared/api'
 import type { LabelEndKind } from '@shared/types'
 import { useStore } from '../state/store'
-import { beatName } from './PlotBoard'
+import { beatName } from '../beatName'
 import ProjectSwitcher from './ProjectSwitcher'
 
 const END_KIND_LABEL: Record<LabelEndKind, string> = {

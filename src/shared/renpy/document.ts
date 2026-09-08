@@ -190,6 +190,59 @@ export function serializeDocument(doc: ScriptDocument): string {
   return doc.hadBom ? BOM + body : body
 }
 
+/**
+ * Whether a node is a bare `pass` on a line of its own.
+ */
+function isPass(node: ScriptNode): boolean {
+  return node.kind === 'raw' && (node.raw ?? '').trim() === 'pass'
+}
+
+/**
+ * Drop the placeholder from a scene that has stopped needing it.
+ *
+ * A beat planned in the outline is written as `label X:` and a `pass`, which
+ * is the app saying "nothing here yet" in a way Ren'Py can read. Once the
+ * first line of the scene arrives, the placeholder is just a line nobody
+ * wrote, so it goes with the same edit that made it unnecessary.
+ *
+ * Only the `pass` directly beneath a label is ever touched, and only when
+ * something else is under that label too. Scripts are full of `pass` inside a
+ * menu choice or an `else:`, where it is not a placeholder but the only thing
+ * keeping that block legal -- removing one of those from an edit elsewhere in
+ * the file would break the game.
+ *
+ * Nothing is ever added. A label with an empty block is Ren'Py's business and
+ * it loads them quite happily; one real project here ships eleven. Writing a
+ * `pass` into those would turn opening a file and typing one word into a
+ * diff of every scene in it.
+ */
+export function dropSpentPass(nodes: ScriptNode[]): ScriptNode[] {
+  const out: ScriptNode[] = []
+  let changed = false
+  let i = 0
+
+  while (i < nodes.length) {
+    const node = nodes[i]
+    out.push(node)
+    i++
+    if (node.kind !== 'label') continue
+
+    const start = i
+    while (i < nodes.length && nodes[i].kind !== 'label') i++
+    const body = nodes.slice(start, i)
+
+    const written = body.filter((n) => n.kind !== 'blank')
+    if (written.length > 1 && isPass(written[0])) {
+      changed = true
+      out.push(...body.filter((n) => n !== written[0]))
+      continue
+    }
+    out.push(...body)
+  }
+
+  return changed ? out : nodes
+}
+
 /** Mark a node as edited so it is regenerated rather than emitted verbatim. */
 export function touch<T extends ScriptNode>(node: T, changes: Partial<T>): T {
   return { ...node, ...changes, raw: null }

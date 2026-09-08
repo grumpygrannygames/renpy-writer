@@ -49,6 +49,7 @@ import { canvasQuality } from '../src/main/encoder'
 import {
   escapeText,
   parseDocument,
+  dropSpentPass,
   serializeDocument,
   toggleMarkup,
   touch,
@@ -745,6 +746,114 @@ async function main() {
     withQuote.find((c) => c.varName === 'ava')?.name === "O'Hara",
     withQuote.find((c) => c.varName === 'ava')?.name)
   await restore()
+
+  console.log('\n[the placeholder in a planned scene]')
+  {
+    const through = (source: string): string => {
+      const doc = parseDocument(source)
+      return serializeDocument({ ...doc, nodes: dropSpentPass(doc.nodes) })
+    }
+    const lines = (...parts: string[]): string => parts.join(String.fromCharCode(10)) + String.fromCharCode(10)
+
+    // A beat planned in the outline is a label and a pass. The pass is the app
+    // saying "nothing here yet", and the first real line says otherwise.
+    check('the pass goes once the scene has a line',
+      through(lines('label a:', '    pass', '    "Hello."')) ===
+        lines('label a:', '    "Hello."'),
+      JSON.stringify(through(lines('label a:', '    pass', '    "Hello."'))))
+
+    check('a scene that is still only a pass keeps it',
+      through(lines('label a:', '    pass')) === lines('label a:', '    pass'),
+      JSON.stringify(through(lines('label a:', '    pass'))))
+
+    check('a scene already written is left alone',
+      through(lines('label a:', '    "Hello."')) === lines('label a:', '    "Hello."'))
+
+    // Nothing is ever added. Ren'Py loads a label with an empty block quite
+    // happily -- a real project here ships eleven of them -- so writing a pass
+    // into those would turn typing one word into a diff of every scene.
+    const hollow = lines('label a:', '', '', 'label b:', '    "Hi."')
+    check('a label with nothing under it is left exactly as it is',
+      through(hollow) === hollow, JSON.stringify(through(hollow)))
+
+    // The one that matters. Scripts are full of pass inside a menu choice or
+    // an else, where it is the only thing keeping that block legal. Deleting
+    // one from an edit elsewhere in the file would break the game.
+    const nested = lines(
+      'label a:',
+      '    "Hello."',
+      '    if seen:',
+      '        "Again."',
+      '    else:',
+      '        pass',
+      '    "Bye."'
+    )
+    check('a pass inside an else is never touched', through(nested) === nested,
+      JSON.stringify(through(nested)))
+
+    const menu = lines(
+      'label a:',
+      '    menu:',
+      '        "Say nothing":',
+      '            pass',
+      '        "Answer":',
+      '            "Yes."'
+    )
+    check('nor one inside a menu choice', through(menu) === menu, JSON.stringify(through(menu)))
+
+    // Not the first line under the label, so not the app's placeholder.
+    const later = lines('label a:', '    "Hello."', '    pass')
+    check('nor one that comes after the words', through(later) === later,
+      JSON.stringify(through(later)))
+
+    // Blank lines between the label and the pass do not change what it is.
+    check('blank lines above the pass make no difference',
+      through(lines('label a:', '', '    pass', '    "Hi."')) ===
+        lines('label a:', '', '    "Hi."'),
+      JSON.stringify(through(lines('label a:', '', '    pass', '    "Hi."'))))
+
+    // Several scenes, each judged on its own.
+    const many = lines(
+      'label a:',
+      '    pass',
+      '    "Words."',
+      '',
+      'label b:',
+      '    pass',
+      '',
+      'label c:',
+      '    "More."'
+    )
+    check('every scene in a file is judged separately',
+      through(many) === lines(
+        'label a:',
+        '    "Words."',
+        '',
+        'label b:',
+        '    pass',
+        '',
+        'label c:',
+        '    "More."'
+      ), JSON.stringify(through(many)))
+
+    const preamble = lines('define e = Character("E")', '', 'label a:', '    "Hi."')
+    check('lines above the first label are left alone', through(preamble) === preamble,
+      JSON.stringify(through(preamble)))
+
+    // The sample project, which is shaped like a real one: opening a file and
+    // typing in it must not rewrite anything else in it.
+    for (const file of ['script.rpy', 'chapter_1.rpy', 'chapter_2.rpy', 'chapter_10.rpy']) {
+      const source = await fs.readFile(
+        path.join(EPISODIC, 'game', 'scripts', file), 'utf8')
+      check(`${file} is left exactly as it is`, through(source) === source)
+    }
+
+    // Untouched input comes back as the very same array, so an edit somewhere
+    // else in a long file does not rebuild every node.
+    const doc = parseDocument(lines('label a:', '    "Hi."'))
+    check('a file needing nothing is handed straight back',
+      dropSpentPass(doc.nodes) === doc.nodes)
+  }
 
   console.log('\n[naming a character the script has never heard of]')
   {

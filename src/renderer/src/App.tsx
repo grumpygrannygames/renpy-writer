@@ -16,6 +16,7 @@ import ScriptPassPanel from './components/ScriptPassPanel'
 import RenderSyncPanel from './components/RenderSyncPanel'
 import SyncPanel from './components/SyncPanel'
 import PhoneNav, { type Pane } from './components/PhoneNav'
+import RemoveBeatDialog, { type PendingRemoval } from './components/RemoveBeatDialog'
 import { usePhoneLayout } from './usePhoneLayout'
 import { api } from './api'
 
@@ -38,6 +39,7 @@ export default function App() {
   const capabilities = useStore((s) => s.capabilities)
   const setAnchorLine = useStore((s) => s.setAnchorLine)
   const flushPendingSaves = useStore((s) => s.flushPendingSaves)
+  const planRemoveBeat = useStore((s) => s.planRemoveBeat)
   const refreshOpenTabs = useStore((s) => s.refreshOpenTabs)
 
   const [showNewEpisode, setShowNewEpisode] = useState(false)
@@ -52,6 +54,7 @@ export default function App() {
   const phone = usePhoneLayout()
   const [pane, setPane] = useState<Pane>('script')
   const [showSync, setShowSync] = useState(false)
+  const [removingBeat, setRemovingBeat] = useState<PendingRemoval | null>(null)
   const [renderEpisodeId, setRenderEpisodeId] = useState<string | null>(null)
   const [passRequest, setPassRequest] = useState<{
     mode: PassMode
@@ -123,6 +126,33 @@ export default function App() {
     const result = await api.resolveImage(opened!.project.renpyRoot, name)
     cache.set(name, result)
     return result
+  }
+
+  /**
+   * Every label the rest of the project is using, so a scene named in the
+   * writer cannot collide with one in another episode. Ren'Py labels are
+   * global; the file on screen is not the whole story.
+   */
+  const episodeId = episode
+    ? (opened.episodes.find((e) => e.fileName === episode.fileName)?.id ?? null)
+    : null
+  const labelsElsewhere = opened.beats
+    .filter((b) => b.label && b.episodeId !== episodeId)
+    .map((b) => b.label as string)
+
+  /**
+   * Removing a scene from the writer.
+   *
+   * Anything typed and not yet saved goes to disk first: the cut is made
+   * against the file, and a beat removed from a version of it that is a second
+   * old would take the last sentence with it.
+   */
+  async function requestRemoveBeat(label: string): Promise<void> {
+    const beat = opened!.beats.find((b) => b.label === label)
+    if (!beat) return
+    await flushPendingSaves()
+    const plan = await planRemoveBeat(beat.id)
+    if (plan) setRemovingBeat({ id: beat.id, title: beat.title, plan })
   }
 
   /** Ctrl+click on a character cue opens them in the reference panel. */
@@ -275,6 +305,8 @@ export default function App() {
                   ? (mode, beat) => setPassRequest({ mode, fileName: tab.fileName, beat })
                   : undefined
               }
+              otherLabels={labelsElsewhere}
+              onRemoveBeat={(label) => void requestRemoveBeat(label)}
             />
           )}
         </div>
@@ -354,6 +386,9 @@ export default function App() {
         <RenderSyncPanel episode={renderEpisode} onClose={() => setRenderEpisodeId(null)} />
       )}
 
+      {removingBeat && (
+        <RemoveBeatDialog removing={removingBeat} onClose={() => setRemovingBeat(null)} />
+      )}
       {showNewEpisode && <NewEpisodeDialog onClose={() => setShowNewEpisode(false)} />}
       {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
       {showAddProject && (

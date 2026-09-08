@@ -774,6 +774,42 @@ label.check input {
   font-style: italic;
 }
 
+/*
+ * The way into a scene that has nothing in it.
+ *
+ * An empty beat is a label and a hidden `pass`, so there was nothing on screen
+ * to click and nothing to press Enter on. This is that missing line.
+ */
+.blk-start {
+  display: block;
+  width: 100%;
+  margin: 4px 0 10px;
+  padding: 10px 12px;
+  text-align: left;
+  font: inherit;
+  font-style: italic;
+  color: var(--text-faint);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  cursor: text;
+}
+.blk-start:hover {
+  border-color: var(--accent);
+  color: var(--text-dim);
+  background: transparent;
+}
+.blk-start.inline {
+  display: inline;
+  width: auto;
+  margin: 0;
+  padding: 0 2px;
+  border: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 /* ------------------------------------------------------- speaker completion */
 
 .speaker-wrap {
@@ -1842,6 +1878,12 @@ label.check input {
 }
 .blk-label:hover .blk-label-action {
   opacity: 1;
+}
+/* Always legible: on a phone there is no hover to reveal it. */
+.blk-label-more {
+  opacity: 0.8;
+  padding: 1px 7px;
+  letter-spacing: 0;
 }
 .blk-label-action:hover:not(:disabled) {
   border-color: var(--accent);

@@ -1,4 +1,5 @@
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -19,6 +20,7 @@ import {
   parseDocument,
   serializeDocument,
   adjustSize,
+  dropSpentPass,
   toggleMarkup,
   touch,
   unescapeText,
@@ -28,6 +30,7 @@ import {
   type ScriptNode
 } from '@shared/renpy/document'
 import { api } from '../api'
+import ContextMenu, { type MenuPosition } from './ContextMenu'
 
 interface Props {
   docKey: string
@@ -47,6 +50,18 @@ interface Props {
   onRevealCharacter?: (varName: string) => void
   /** Translate or proofread one beat, given its label and 1-indexed line range. */
   onBeatPass?: (mode: PassMode, beat: { label: string; from: number; to: number }) => void
+  /**
+   * Labels used by the rest of the project. Ren'Py labels are global, so a
+   * name is only free if it is free in every file, and this view can only see
+   * one of them.
+   */
+  otherLabels?: string[]
+  /**
+   * Take a beat out of the story altogether. Handled outside this view because
+   * it writes to the file rather than to the document in hand: the outline
+   * entry has to go with it, or the beat comes back as an unwritten one.
+   */
+  onRemoveBeat?: (label: string) => void
 }
 
 type Field = 'speaker' | 'text'
@@ -77,7 +92,9 @@ export default function WriterView({
   renpyRoot,
   onAnchorLine,
   onRevealCharacter,
-  onBeatPass
+  onBeatPass,
+  otherLabels,
+  onRemoveBeat
 }: Props) {
   const [doc, setDoc] = useState<ScriptDocument>(() => parseDocument(value))
   const [editing, setEditing] = useState<{ id: string; field: Field } | null>(null)
@@ -86,7 +103,16 @@ export default function WriterView({
   const docRef = useRef(doc)
   docRef.current = doc
   const scroller = useRef<HTMLDivElement>(null)
-  const pendingFocus = useRef<{ id: string; field: Field } | null>(null)
+  const pendingFocus = useRef<{ id: string; field: Field; selectAll?: boolean } | null>(null)
+  /**
+   * Labels made here, which are the only ones a rename may upper-case.
+   *
+   * A beat created in this view is named by typing into the label, the same
+   * input that renames an existing one -- and upper-casing what somebody types
+   * over `ch2_dream` would rename a label the rest of the script jumps to.
+   */
+  const freshLabels = useRef<Set<string>>(new Set())
+  const [labelMenu, setLabelMenu] = useState<{ id: string; at: MenuPosition } | null>(null)
   /** Recomputes the anchor; set once the scroller is listening. */
   const reportRef = useRef<(() => void) | null>(null)
   /**
@@ -123,7 +149,8 @@ export default function WriterView({
   onChangeRef.current = onChange
 
   const commit = useCallback((nodes: ScriptNode[]) => {
-    const next = { ...docRef.current, nodes }
+    // The placeholder in a planned scene goes as soon as there are words.
+    const next = { ...docRef.current, nodes: dropSpentPass(nodes) }
     docRef.current = next
     setDoc(next)
     const text = serializeDocument(next)
@@ -157,17 +184,20 @@ export default function WriterView({
     )
     el?.focus()
     if (el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement) {
-      const len = el.value.length
-      el.setSelectionRange(len, len)
+      if (want.selectAll) el.select()
+      else {
+        const len = el.value.length
+        el.setSelectionRange(len, len)
+      }
     }
   })
 
   const onAnchorLineRef = useRef(onAnchorLine)
   onAnchorLineRef.current = onAnchorLine
 
-  const focusOn = useCallback((id: string, field: Field) => {
+  const focusOn = useCallback((id: string, field: Field, selectAll = false) => {
     setEditing({ id, field })
-    pendingFocus.current = { id, field }
+    pendingFocus.current = { id, field, selectAll }
   }, [])
 
   const stopEditing = useCallback(() => setEditing(null), [])
@@ -200,6 +230,162 @@ export default function WriterView({
     commit(nodes)
     focusOn(created.id, 'speaker')
   }, [commit, focusOn])
+
+  /** Index just past the last node belonging to the label at `idx`. */
+  const beatEnd = (nodes: ScriptNode[], idx: number): number => {
+    let i = idx + 1
+    while (i < nodes.length && nodes[i].kind !== 'label') i++
+    return i
+  }
+
+  /**
+   * Give the node at `index` a line terminator if it has none.
+   *
+   * The last line of a file that does not end in a newline is held with an
+   * empty terminator. Insert after it and the two lines are serialised into
+   * one, so `label NEW_BEAT:` arrives welded to the end of the last sentence.
+   */
+  const terminate = (nodes: ScriptNode[], index: number, eol: string): void => {
+    const node = nodes[index]
+    if (node && node.eol === '') nodes[index] = { ...node, eol }
+  }
+
+  /** The indent a line inside this beat should have. */
+  const bodyIndent = (nodes: ScriptNode[], idx: number): string => {
+    for (let i = idx + 1; i < beatEnd(nodes, idx); i++) {
+      if (nodes[i].kind !== 'blank' && nodes[i].indent) return nodes[i].indent
+    }
+    return '    '
+  }
+
+  /**
+   * A label nobody else is using, here or in any other episode.
+   *
+   * Compared without case: Ren'Py would take FOO and foo as two labels, being
+   * case-sensitive, but nobody reading the script would thank us.
+   */
+  const freeLabel = useCallback(
+    (want: string, exceptId: string): string => {
+      const taken = new Set<string>((otherLabels ?? []).map((l) => l.toLowerCase()))
+      for (const node of docRef.current.nodes) {
+        if (node.kind === 'label' && node.id !== exceptId) taken.add(node.name.toLowerCase())
+      }
+      if (!taken.has(want.toLowerCase())) return want
+      for (let i = 2; ; i++) {
+        if (!taken.has(`${want}_${i}`.toLowerCase())) return `${want}_${i}`
+      }
+    },
+    [otherLabels]
+  )
+
+  /**
+   * Start writing a scene that has nothing in it.
+   *
+   * An empty beat is a label and a `pass`, which is there only to keep the
+   * label valid -- Ren'Py will not load a block with nothing in it. The `pass`
+   * is hidden in this view, so the scene looked like a heading with no way in:
+   * nothing to click, and Enter with no line to press it on. The first real
+   * line takes the `pass` with it.
+   */
+  const startBeat = useCallback((labelId: string) => {
+    const nodes0 = docRef.current.nodes
+    const idx = nodes0.findIndex((n) => n.id === labelId)
+    if (idx === -1) return
+    const anchor = nodes0[idx]
+    const indent = bodyIndent(nodes0, idx)
+
+    // Below the placeholder rather than above it: `dropSpentPass` only takes
+    // a `pass` that is the first thing under the label, and being careful
+    // about which `pass` it takes is what keeps it safe.
+    const after = (() => {
+      for (let i = idx + 1; i < beatEnd(nodes0, idx); i++) {
+        if (nodes0[i].kind === 'blank') continue
+        return nodes0[i].kind === 'raw' && (nodes0[i].raw ?? '').trim() === 'pass' ? i : idx
+      }
+      return idx
+    })()
+
+    const nodes = [...nodes0]
+    const created: ScriptNode = {
+      id: nextId(),
+      kind: 'dialogue',
+      indent,
+      raw: null,
+      eol: anchor.eol || '\n',
+      speaker: null,
+      attributes: [],
+      text: ''
+    }
+    const at = after + 1
+    terminate(nodes, after, created.eol)
+    nodes.splice(at, 0, created)
+    commit(nodes)
+    focusOn(created.id, 'speaker')
+  }, [commit, focusOn])
+
+  /**
+   * A new scene, either after the one at `labelId` or at the end of the file.
+   *
+   * Shaped exactly like a beat made from the plot board -- a label and a
+   * `pass` -- so the two are the same thing however it was made. The name is
+   * typed straight into the label, which is where a beat is named here.
+   */
+  const addBeat = useCallback((labelId: string | null) => {
+    const nodes0 = docRef.current.nodes
+    const idx = labelId === null ? -1 : nodes0.findIndex((n) => n.id === labelId)
+    const at = idx === -1 ? nodes0.length : beatEnd(nodes0, idx)
+    const eol = nodes0[nodes0.length - 1]?.eol || '\n'
+    const indent = idx === -1 ? '    ' : bodyIndent(nodes0, idx)
+
+    const label: ScriptNode = {
+      id: nextId(),
+      kind: 'label',
+      indent: '',
+      raw: null,
+      eol,
+      name: freeLabel('NEW_BEAT', '')
+    }
+    const body: ScriptNode = {
+      id: nextId(),
+      kind: 'raw',
+      indent,
+      raw: `${indent}pass`,
+      eol
+    }
+
+    const added: ScriptNode[] = [label, body]
+    // One blank line between scenes, and no more than one.
+    if (at > 0 && nodes0[at - 1].kind !== 'blank') {
+      added.unshift({ id: nextId(), kind: 'blank', indent: '', raw: null, eol })
+    }
+
+    const nodes = [...nodes0]
+    terminate(nodes, at - 1, eol)
+    nodes.splice(at, 0, ...added)
+    freshLabels.current.add(label.id)
+    commit(nodes)
+    focusOn(label.id, 'text', true)
+  }, [commit, focusOn, freeLabel])
+
+  /**
+   * Rename a label to what was typed, near enough.
+   *
+   * Ren'Py names cannot carry spaces or punctuation, so those become
+   * underscores. A beat made a moment ago is upper-cased to match the ones the
+   * plot board writes; one that was already in the script is left as typed,
+   * because it is a name the rest of the script may be jumping to.
+   */
+  const renameLabel = useCallback((id: string, typed: string) => {
+    const node = docRef.current.nodes.find((n) => n.id === id)
+    if (!node || node.kind !== 'label') return
+    let name = typed.trim().replace(/[^A-Za-z0-9_]/g, '_').replace(/^_+|_+$/g, '')
+    if (!name) return
+    if (freshLabels.current.has(id)) name = name.toUpperCase()
+    if (/^[0-9]/.test(name)) name = `BEAT_${name}`
+    name = freeLabel(name, id)
+    if (name === node.name) return
+    replaceNode(id, (n) => touch(n as never, { name } as never))
+  }, [freeLabel, replaceNode])
 
   /**
    * Turn a block into another kind of element, keeping its words.
@@ -336,6 +522,30 @@ export default function WriterView({
     return map
   }, [doc])
 
+  /**
+   * Labels with nothing under them to click.
+   *
+   * Not the same question as whether the outline calls a beat unwritten: a
+   * scene holding only a stage direction is unwritten there, but here it has a
+   * block you can put the cursor in, which is all this is deciding.
+   */
+  const barren = useMemo(() => {
+    const empty = new Set<string>()
+    let current: string | null = null
+    for (const node of doc.nodes) {
+      if (node.kind === 'label') {
+        current = node.id
+        empty.add(node.id)
+        continue
+      }
+      if (!current) continue
+      if (node.kind === 'dialogue' || node.kind === 'choice' || node.kind === 'action') {
+        empty.delete(current)
+      }
+    }
+    return empty
+  }, [doc])
+
   /** Line range of each label block, for translating one beat at a time. */
   const beatRange = useMemo(() => {
     const map = new Map<string, { label: string; from: number; to: number }>()
@@ -372,8 +582,8 @@ export default function WriterView({
 
       <div className="writer-page" ref={scroller}>
         {visible.map((node) => (
+          <Fragment key={node.id}>
           <Block
-            key={node.id}
             node={node}
             line={lineOf.get(node.id) ?? 0}
             renpyRoot={renpyRoot}
@@ -394,12 +604,52 @@ export default function WriterView({
             onBackspaceEmpty={removeNode}
             onMarkup={applyMarkup}
             onSize={applySize}
+            onRenameLabel={renameLabel}
+            onStartBeat={startBeat}
+            onAddBeat={addBeat}
+            onRemoveBeat={onRemoveBeat}
+            onLabelMenu={(id, at) => setLabelMenu({ id, at })}
           />
+          {node.kind === 'label' && barren.has(node.id) && (
+            <button className="blk-start" onClick={() => startBeat(node.id)}>
+              Nothing written here yet &mdash; start the scene
+            </button>
+          )}
+          </Fragment>
         ))}
         {visible.length === 0 && (
-          <p className="writer-empty">This episode is empty. Start typing to add the first line.</p>
+          <p className="writer-empty">
+            This episode has nothing in it yet.{' '}
+            <button className="blk-start inline" onClick={() => addBeat(null)}>
+              Add the first scene
+            </button>
+          </p>
         )}
       </div>
+
+      {labelMenu && (
+        <ContextMenu
+          at={labelMenu.at}
+          items={[
+            {
+              label: barren.has(labelMenu.id) ? 'Start the scene' : 'Add a line at the top',
+              onSelect: () => startBeat(labelMenu.id)
+            },
+            { label: 'New scene below', onSelect: () => addBeat(labelMenu.id) },
+            { label: 'Rename', onSelect: () => focusOn(labelMenu.id, 'text', true) },
+            {
+              label: 'Remove scene',
+              separated: true,
+              disabled: !onRemoveBeat,
+              onSelect: () => {
+                const node = docRef.current.nodes.find((n) => n.id === labelMenu.id)
+                if (node?.kind === 'label') onRemoveBeat?.(node.name)
+              }
+            }
+          ]}
+          onClose={() => setLabelMenu(null)}
+        />
+      )}
     </div>
   )
 }
@@ -423,6 +673,11 @@ interface BlockProps {
   onBlur: () => void
   onChangeNode: (id: string, updater: (n: ScriptNode) => ScriptNode) => void
   onEnter: (id: string) => void
+  onRenameLabel: (id: string, typed: string) => void
+  onStartBeat: (id: string) => void
+  onAddBeat: (id: string | null) => void
+  onRemoveBeat?: (label: string) => void
+  onLabelMenu: (id: string, at: { x: number; y: number }) => void
   onTab: (id: string) => void
   onKind?: (id: string, kind: ScriptNode['kind']) => void
   onBackspaceEmpty: (id: string) => void
@@ -431,7 +686,7 @@ interface BlockProps {
 }
 
 const Block = memo(function Block(props: BlockProps) {
-  const { node, line, renpyRoot, beat, onBeatPass, editing, byVar, labeller, expressionsEnabled, onFocusField, onBlur, onChangeNode, onRevealCharacter } =
+  const { node, line, renpyRoot, beat, onBeatPass, editing, byVar, labeller, expressionsEnabled, onFocusField, onBlur, onChangeNode, onRevealCharacter, onRenameLabel, onStartBeat, onLabelMenu } =
     props
 
   if (node.kind === 'blank') return <div className="blk-blank" data-line={line} />
@@ -453,14 +708,21 @@ const Block = memo(function Block(props: BlockProps) {
             className="blk-label-input"
             defaultValue={node.name}
             onBlur={(e) => {
-              const name = e.target.value.trim().replace(/[^A-Za-z0-9_]/g, '_')
-              if (name && name !== node.name) {
-                onChangeNode(node.id, (n) => touch(n as never, { name } as never))
-              }
+              onRenameLabel(node.id, e.target.value)
               onBlur()
             }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur()
+              if (e.key === 'Escape') {
+                e.currentTarget.blur()
+                return
+              }
+              // Naming a scene and writing it are one movement: Enter takes
+              // the name and puts the cursor on the first line.
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                onRenameLabel(node.id, e.currentTarget.value)
+                onStartBeat(node.id)
+              }
             }}
           />
         ) : (
@@ -468,8 +730,9 @@ const Block = memo(function Block(props: BlockProps) {
             {node.name}
           </span>
         )}
-        {beat && onBeatPass && (
-          <span className="blk-label-actions">
+        <span className="blk-label-actions">
+          {beat && onBeatPass && (
+            <>
             <button
               className="blk-label-action"
               title={`Translate this beat (lines ${beat.from}–${beat.to})`}
@@ -490,8 +753,20 @@ const Block = memo(function Block(props: BlockProps) {
             >
               Proofread
             </button>
-          </span>
-        )}
+            </>
+          )}
+          <button
+            className="blk-label-action blk-label-more"
+            title="What can be done with this scene"
+            onClick={(e) => {
+              e.stopPropagation()
+              const box = e.currentTarget.getBoundingClientRect()
+              onLabelMenu(node.id, { x: box.left, y: box.bottom + 4 })
+            }}
+          >
+            &#8943;
+          </button>
+        </span>
       </div>
     )
   }

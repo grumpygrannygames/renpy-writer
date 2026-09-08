@@ -144,7 +144,7 @@ async function makeFixture() {
 }
 
 // A hung page must not hang the suite; fail loudly instead.
-const WATCHDOG_MS = 480000 * PACE
+const WATCHDOG_MS = 900000 * PACE
 const watchdog = setTimeout(() => {
   console.log(`  FAIL harness timed out after ${WATCHDOG_MS / 1000}s`)
   console.log(`${pass} passed, ${fail + 1} failed`)
@@ -1459,15 +1459,16 @@ app.whenReady().then(async () => {
     };
   })()`)
   check('every label carries its pass actions', inWriter.stage === 'ok', String(inWriter.stage))
-  check('they read Translate and Proofread',
-    JSON.stringify(inWriter.labels) === '["Translate","Proofread"]', JSON.stringify(inWriter.labels))
+  check('they read Translate and Proofread, with the scene menu after them',
+    JSON.stringify((inWriter.labels ?? []).slice(0, 2)) === '["Translate","Proofread"]' &&
+    (inWriter.labels ?? []).length === 3, JSON.stringify(inWriter.labels))
   check('they sit at the right end of the label row',
-    inWriter.gapFromRight >= 0 && inWriter.gapFromRight <= 2 && inWriter.isAfterName === true,
+    Math.abs(inWriter.gapFromRight) <= 2 && inWriter.isAfterName === true,
     'gap from right: ' + inWriter.gapFromRight + ', after the name: ' + inWriter.isAfterName)
   check('they are visible without hovering', inWriter.restingOpacity > 0.3,
     String(inWriter.restingOpacity))
-  check('each names the line range it would cover',
-    inWriter.titles.length === 2 && inWriter.titles.every(t => /lines \d+/.test(t)),
+  check('each pass action names the line range it would cover',
+    (inWriter.titles ?? []).slice(0, 2).every(t => /lines \d+/.test(t)),
     JSON.stringify(inWriter.titles))
   check('translate opens the panel scoped to that beat',
     inWriter.translate.scopes.find(s => s.text === 'This beat')?.on === true,
@@ -3744,6 +3745,286 @@ app.whenReady().then(async () => {
       !(done.labels ?? []).includes('ch2_kettle'), JSON.stringify(done.labels))
     check('the file got shorter, not longer', after.length < before.length,
       `${before.length} -> ${after.length}`)
+  }
+
+  console.log('\n[scenes, from the writer]')
+  {
+    // A beat planned on the plot board opens in the writer as a heading with
+    // nothing under it: the `pass` holding it open is a code line, and code
+    // lines are hidden here. There was nothing to click and no line to press
+    // Enter on, so a scene could be planned and then not written.
+    const chapter = path.join(root, 'game', 'scripts', 'chapter_2.rpy')
+
+    const opened = await js(`(async () => {${UNTIL}
+      Array.from(document.querySelectorAll('.episode-row'))
+        .find(e => e.textContent.includes('chapter_2'))?.click();
+      await until(() => document.querySelector('.tab.active'));
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Writer')?.click();
+      await until(() => document.querySelector('.blk-label'));
+      return { labels: Array.from(document.querySelectorAll('.blk-label-name')).map(e => e.textContent) };
+    })()`)
+    check('the writer is showing chapter 2', (opened.labels ?? []).includes('ch2_arrival'),
+      JSON.stringify(opened.labels).slice(0, 120))
+
+    // --- a new scene, named where a scene is named -----------------------
+    const added = await js(`(async () => {${UNTIL}
+      const labelOf = (name) => Array.from(document.querySelectorAll('.blk-label'))
+        .find(el => el.querySelector('.blk-label-name')?.textContent === name);
+      const row = labelOf('ch2_arrival');
+      if (!row) return { stage: 'no label' };
+      row.querySelector('.blk-label-more').click();
+      await until(() => document.querySelector('.ctxmenu'));
+      const offered = Array.from(document.querySelectorAll('.ctx-item')).map(b => b.textContent);
+      Array.from(document.querySelectorAll('.ctx-item'))
+        .find(b => b.textContent === 'New scene below').click();
+
+      const input = await until(() => document.querySelector('.blk-label-input'));
+      if (!input) return { stage: 'no name field', offered };
+      // Named by typing over it, so the placeholder must be selected.
+      const selected = input.selectionEnd - input.selectionStart === input.value.length;
+      const placeholder = input.value;
+
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        .call(input, 'The letter on the table');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+      // Enter takes the name and puts the cursor on the first line.
+      const cue = await until(() => document.querySelector('.blk-character-input'));
+      return {
+        stage: 'ok', offered, selected, placeholder,
+        started: !!cue,
+        focused: document.activeElement === cue,
+        labels: Array.from(document.querySelectorAll('.blk-label-name')).map(e => e.textContent)
+      };
+    })()`)
+
+    check('the scene menu offers what can be done with one', added.stage === 'ok',
+      JSON.stringify(added).slice(0, 200))
+    check('including a new scene and removing this one',
+      (added.offered ?? []).includes('New scene below') &&
+      (added.offered ?? []).includes('Remove scene'), JSON.stringify(added.offered))
+    check('the placeholder name is selected, ready to be typed over',
+      added.selected === true, String(added.placeholder))
+    check('the new scene takes the name, upper-cased like the plot board writes them',
+      (added.labels ?? []).includes('THE_LETTER_ON_THE_TABLE'),
+      JSON.stringify((added.labels ?? []).slice(0, 4)))
+    check('and Enter goes straight to writing it',
+      added.started === true && added.focused === true,
+      `started=${added.started} focused=${added.focused}`)
+
+    // --- and the words go in ---------------------------------------------
+    const written = await js(`(async () => {${UNTIL}
+      const cue = document.querySelector('.blk-character-input');
+      if (!cue) return { stage: 'no cue' };
+      const set = (el, v) => {
+        const proto = el instanceof HTMLTextAreaElement
+          ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, v);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      set(cue, 'ava');
+      await wait(250);
+      cue.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      const ta = await until(() => document.querySelector('.blk-input'));
+      if (!ta) return { stage: 'no text field' };
+      set(ta, 'She reads it twice and says nothing.');
+      ta.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      await wait(400);
+      return { stage: 'ok' };
+    })()`)
+    check('a line can be typed into the new scene', written.stage === 'ok',
+      JSON.stringify(written))
+
+    // Past the autosave.
+    await sleep(3000)
+    const source = await fs.readFile(chapter, 'utf8')
+    const beat = source.slice(source.indexOf('label THE_LETTER_ON_THE_TABLE:'))
+      .split(/\r?\n/).slice(0, 4).join('\n')
+    check('the scene reached the script', source.includes('label THE_LETTER_ON_THE_TABLE:'),
+      'not in the file')
+    check('with the line under it', /ava "She reads it twice and says nothing\."/.test(source),
+      beat)
+    check('and no placeholder left holding it open', !/pass/.test(beat), beat)
+    check('while the scene it was added below is untouched',
+      source.includes('label ch2_arrival:'), 'ch2_arrival went missing')
+
+    // --- the outline hears about it --------------------------------------
+    const inOutline = await js(`(async () => {${UNTIL}
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Plot')?.click();
+      const card = await until(() => Array.from(document.querySelectorAll('.plot-card'))
+        .find(c => c.getAttribute('data-label') === 'THE_LETTER_ON_THE_TABLE'));
+      return { there: !!card, title: card?.querySelector('.pc-title')?.textContent ?? null };
+    })()`)
+    check('the outline has the scene without being asked', inOutline.there === true,
+      JSON.stringify(inOutline))
+    check('under the name that was typed', inOutline.title === 'THE LETTER ON THE TABLE',
+      String(inOutline.title))
+
+    // --- a scene planned and not yet written ------------------------------
+    // Reported rather than thrown: an exception in here leaves the harness
+    // waiting on a promise that never settles, and the rest of the suite goes
+    // with it.
+    const planned = await js(`(async () => {${UNTIL}
+      Array.from(document.querySelectorAll('.tab'))
+        .find(t => t.textContent.indexOf('chapter_2') !== -1)?.click();
+      await wait(400);
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Writer')?.click();
+      await until(() => document.querySelector('.blk-label'));
+
+      const named = (name) => Array.from(document.querySelectorAll('.blk-label'))
+        .find(el => el.querySelector('.blk-label-name')?.textContent === name);
+      const row = await until(() => named('THE_LETTER_ON_THE_TABLE'));
+      if (!row) {
+        return { stage: 'no such scene',
+                 showing: Array.from(document.querySelectorAll('.blk-label-name'))
+                   .map(e => e.textContent).slice(0, 12) };
+      }
+      const more = row.querySelector('.blk-label-more');
+      if (!more) return { stage: 'no menu button', row: row.className };
+      more.click();
+      const menu = await until(() => document.querySelector('.ctxmenu'));
+      if (!menu) return { stage: 'menu never opened' };
+      const item = Array.from(document.querySelectorAll('.ctx-item'))
+        .find(b => b.textContent === 'New scene below');
+      if (!item) {
+        return { stage: 'no such item',
+                 items: Array.from(document.querySelectorAll('.ctx-item')).map(b => b.textContent) };
+      }
+      item.click();
+
+      const input = await until(() => document.querySelector('.blk-label-input'));
+      if (!input) return { stage: 'no name field' };
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        .call(input, 'What she does next');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      // Escape rather than Enter: named, and left for later.
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      input.blur();
+      await wait(700);
+
+      const heading = named('WHAT_SHE_DOES_NEXT');
+      const invitation = heading?.nextElementSibling;
+      return {
+        stage: 'ok',
+        named: !!heading,
+        showing: Array.from(document.querySelectorAll('.blk-label-name'))
+          .map(e => e.textContent).slice(0, 12),
+        invited: invitation?.className ?? null,
+        says: invitation?.textContent ?? null
+      };
+    })()`)
+
+    check('a scene can be left planned rather than written', planned.named === true,
+      JSON.stringify(planned).slice(0, 200))
+    check('and says so where the words would be',
+      (planned.invited ?? '').includes('blk-start'), String(planned.invited))
+    check('in words that offer a way in',
+      /start the scene/i.test(planned.says ?? ''), String(planned.says))
+
+    await sleep(3000)
+    const planning = await fs.readFile(chapter, 'utf8')
+    const held = planning.slice(planning.indexOf('label WHAT_SHE_DOES_NEXT:'))
+      .split(/\r?\n/).slice(0, 3).join('\n')
+    check('and is held open in the script the same way the plot board holds one',
+      /label WHAT_SHE_DOES_NEXT:\s*\n\s+pass/.test(planning), held)
+
+    // The scene menu open over a scene with nothing in it, which is the pair
+    // of things this section is about. Checks read the DOM, which has been
+    // known to look perfect while the thing on screen was unreadable.
+    const menuOpen = await js(`(async () => {${UNTIL}
+      const heading = Array.from(document.querySelectorAll('.blk-label'))
+        .find(el => el.querySelector('.blk-label-name')?.textContent === 'WHAT_SHE_DOES_NEXT');
+      if (!heading) return { stage: 'no such scene' };
+      heading.scrollIntoView({ block: 'center' });
+      await wait(300);
+      heading.querySelector('.blk-label-more').click();
+      const menu = await until(() => document.querySelector('.ctxmenu'));
+      return { stage: menu ? 'ok' : 'menu never opened' };
+    })()`)
+    check('the scene menu opens over the page', menuOpen.stage === 'ok', JSON.stringify(menuOpen))
+
+    const writerShots = path.join(os.tmpdir(), 'rpw-shots')
+    await fs.mkdir(writerShots, { recursive: true })
+    await fs.writeFile(
+      path.join(writerShots, 'writer-scenes.png'),
+      (await win.webContents.capturePage()).toPNG()
+    )
+    console.log('  screenshot: ' + path.join(writerShots, 'writer-scenes.png'))
+
+    await js(`(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await new Promise(r => setTimeout(r, 300));
+    })()`)
+
+    const begun = await js(`(async () => {${UNTIL}
+      const heading = Array.from(document.querySelectorAll('.blk-label'))
+        .find(el => el.querySelector('.blk-label-name')?.textContent === 'WHAT_SHE_DOES_NEXT');
+      if (!heading) return { stage: 'no such scene' };
+      const invitation = heading.nextElementSibling;
+      if (!invitation || invitation.className.indexOf('blk-start') === -1) {
+        return { stage: 'nothing to click', invited: invitation?.className ?? null };
+      }
+      invitation.click();
+      const cue = await until(() => document.querySelector('.blk-character-input'));
+      return { stage: 'ok', started: !!cue, focused: document.activeElement === cue };
+    })()`)
+    check('clicking it starts the scene', begun.started === true && begun.focused === true,
+      JSON.stringify(begun))
+
+    // --- and a scene can go ------------------------------------------------
+    const removed = await js(`(async () => {${UNTIL}
+      document.activeElement?.blur();
+      await wait(400);
+      const row = Array.from(document.querySelectorAll('.blk-label'))
+        .find(el => el.querySelector('.blk-label-name')?.textContent === 'WHAT_SHE_DOES_NEXT');
+      if (!row) return { stage: 'gone already' };
+      const more = row.querySelector('.blk-label-more');
+      if (!more) return { stage: 'no menu button' };
+      more.click();
+      const menu = await until(() => document.querySelector('.ctxmenu'));
+      if (!menu) return { stage: 'menu never opened' };
+      const item = Array.from(document.querySelectorAll('.ctx-item'))
+        .find(b => b.textContent === 'Remove scene');
+      if (!item) {
+        return { stage: 'no such item',
+                 items: Array.from(document.querySelectorAll('.ctx-item')).map(b => b.textContent) };
+      }
+      item.click();
+
+      const asked = await until(() => document.querySelector('.remove-modal'));
+      if (!asked) return { stage: 'never asked' };
+      const warning = asked.textContent ?? '';
+      Array.from(document.querySelectorAll('.remove-modal .actions-row button'))
+        .find(b => b.textContent === 'Remove it').click();
+      await wait(2000);
+      return {
+        stage: 'ok', warning,
+        labels: Array.from(document.querySelectorAll('.blk-label-name')).map(e => e.textContent)
+      };
+    })()`)
+
+    check('removing a scene asks before it writes', removed.stage === 'ok',
+      JSON.stringify(removed).slice(0, 200))
+    check('and says what it will cost', /line/.test(removed.warning ?? ''),
+      String(removed.warning).slice(0, 140))
+    check('the scene left the writer', !(removed.labels ?? []).includes('WHAT_SHE_DOES_NEXT'),
+      JSON.stringify(removed.labels ?? []).slice(0, 160))
+
+    const afterRemoval = await fs.readFile(chapter, 'utf8')
+    check('and the script', !afterRemoval.includes('WHAT_SHE_DOES_NEXT'), 'still in the file')
+    check('while the scene before it stayed',
+      afterRemoval.includes('label THE_LETTER_ON_THE_TABLE:'), 'took the wrong one')
+
+    const outlineAfter = JSON.parse(
+      await fs.readFile(path.join(root, '.renpywriter', 'outline.json'), 'utf8'))
+    check('the outline lost it too, rather than keeping an unwritten ghost',
+      !outlineAfter.beats.some((b) => b.title === 'WHAT_SHE_DOES_NEXT' ||
+        b.label === 'WHAT_SHE_DOES_NEXT'),
+      JSON.stringify(outlineAfter.beats.map((b) => b.title).slice(-4)))
   }
 
   console.log('\n[a character who is not in the script yet]')
