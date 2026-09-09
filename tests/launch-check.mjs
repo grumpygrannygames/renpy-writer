@@ -183,6 +183,10 @@ const MAY_TAKE_FOCUS = process.env.CI === 'true' || process.env.RPW_E2E_FOCUS ==
  *
  * Everything that matters still works out here: layout is computed, the page
  * is composited, and capturePage returns a real picture.
+ *
+ * Only where there is somebody to be got out of the way of. A build server has
+ * nobody, and putting the window somewhere the compositor has to think about
+ * costs time there that the render checks are measuring.
  */
 const PARKED = [-4200, -4200]
 
@@ -276,7 +280,7 @@ app.whenReady().then(async () => {
   }
 
   await win.loadFile(path.join(out, 'renderer', 'index.html'))
-  win.setPosition(PARKED[0], PARKED[1])
+  if (!MAY_TAKE_FOCUS) win.setPosition(PARKED[0], PARKED[1])
   win.showInactive()
   await settle(win.webContents, "document.querySelector('.gate-card')")
   // A moment more: the gate is drawn before the project list arrives.
@@ -586,10 +590,21 @@ app.whenReady().then(async () => {
   console.log('\n[writer view]')
   await js(`document.querySelector('.episode-row')?.click()`)
   await sleep(900)
+  /*
+   * Timed to the blocks being on screen, not to a sleep that happened to
+   * follow the click. This used to span a fixed wait, which is doubled on a
+   * build server -- so most of the two seconds being asserted was time this
+   * suite had spent on purpose, and the number said nothing about the writer.
+   */
   const started = Date.now()
   await js(`Array.from(document.querySelectorAll('.mode-switch button')).find(b => b.textContent === 'Writer')?.click()`)
-  await sleep(900)
+  const drew = await settle(
+    win.webContents,
+    "document.querySelectorAll('.blk-dialogue').length > 100",
+    20000
+  )
   const renderMs = Date.now() - started
+  await sleep(400)
 
   // Hand the page the file it is displaying, so the check below can compare
   // what is on screen against what is actually in the script.
@@ -626,6 +641,7 @@ app.whenReady().then(async () => {
   check('character names shown uppercase', writer.firstSpeaker === 'AVA', String(writer.firstSpeaker))
   check('expression pickers shown when enabled', writer.expressionPickers > 0, String(writer.expressionPickers))
   check('dialogue on screen matches the file', writer.sampleLine !== null, String(writer.sampleLine))
+  check('the writer drew the script', drew === true, String(drew))
   check(`writer renders in under 2s (${renderMs}ms)`, renderMs < 2000, `${renderMs}ms`)
 
   const toggled = await js(`(() => {
@@ -1584,10 +1600,6 @@ app.whenReady().then(async () => {
     // Windows will not always hand the foreground to a process that is not
     // already in it, so ask more than once and in more than one way rather than
     // assuming a single call worked.
-  // On screen for this, since real key events need a window the desktop is
-    // willing to put in front. Nothing here runs unless there is nobody to
-    // interrupt.
-    win.setPosition(60, 60)
     let focused = false
     for (let attempt = 0; attempt < 5 && !focused; attempt++) {
       win.showInactive()
@@ -1656,10 +1668,8 @@ app.whenReady().then(async () => {
     check('editing never leaves the character', pressed.afterSecond?.heading === 'Ben',
       String(pressed.afterSecond?.heading))
 
-    // Hand the keyboard back the moment it is no longer needed, and get out
-    // of the way again.
+    // Hand the keyboard back the moment it is no longer needed.
     win.blur()
-    win.setPosition(PARKED[0], PARKED[1])
   }
 
   console.log('\n[image hover in the code view]')
