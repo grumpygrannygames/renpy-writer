@@ -1777,6 +1777,85 @@ app.whenReady().then(async () => {
   check('clicking a line opens an editor on a large file', typing.openedEditor)
   check('editor opens fast (' + Math.round(typing.ms) + 'ms)', typing.ms < 1000, Math.round(typing.ms) + 'ms')
 
+  console.log('\n[a project keeps the tabs it had open]')
+  {
+    /*
+     * Switching projects closed everything. Coming back meant finding the two
+     * or three files you had been working across and opening them again, every
+     * time -- and this app is for people who keep two games on the go.
+     *
+     * There is only one project in this fixture, so leaving and returning is
+     * done through the gate rather than by switching to another.
+     */
+    const kept = await js(`(async () => {${UNTIL}
+      const open = async (name) => {
+        const row = Array.from(document.querySelectorAll('.episode-row'))
+          .find(e => e.textContent.includes(name));
+        if (!row) return false;
+        row.click();
+        await until(() => (document.querySelector('.tab.active')?.textContent || '').includes(name));
+        await wait(500);
+        return true;
+      };
+      const names = () => Array.from(document.querySelectorAll('.tab'))
+        .map(t => t.getAttribute('data-tab'));
+
+      if (!(await open('chapter_2'))) return { stage: 'no chapter_2' };
+      if (!(await open('chapter_1'))) return { stage: 'no chapter_1' };
+      // And the plot board, which is a tab of a different kind.
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Plot')?.click();
+      await wait(700);
+      // Back to a script, so what is in front is worth remembering.
+      const back = Array.from(document.querySelectorAll('.tab'))
+        .find(t => (t.textContent || '').includes('chapter_2'));
+      back?.click();
+      await wait(600);
+
+      const before = names();
+      const activeBefore = document.querySelector('.tab.active')?.getAttribute('data-tab') ?? null;
+
+      // Out through the switcher, and back in from the gate.
+      document.querySelector('.switcher-trigger')?.click();
+      await wait(400);
+      const close = Array.from(document.querySelectorAll('.popover-item .pi-name'))
+        .find(e => (e.textContent || '').trim() === 'Close project');
+      if (!close) return { stage: 'no close control', before };
+      close.closest('button').click();
+      const gate = await until(() => document.querySelector('.project-item'));
+      if (!gate) return { stage: 'never reached the gate', before };
+      const emptied = document.querySelectorAll('.tab').length;
+
+      document.querySelector('.project-item').click();
+      await until(() => document.querySelector('.episode-row'));
+      await wait(2500);
+
+      // Clicking an episode row folds its beats away, and the sections after
+      // this one work through beat rows. Leave the sidebar as it was found.
+      Array.from(document.querySelectorAll('.ep-caret.collapsed')).forEach(c => c.click());
+      await wait(400);
+
+      return {
+        stage: 'ok', before, activeBefore, emptied,
+        after: names(),
+        activeAfter: document.querySelector('.tab.active')?.getAttribute('data-tab') ?? null
+      };
+    })()`)
+
+    check('a few things can be open at once', kept.stage === 'ok' &&
+      (kept.before ?? []).length >= 3, JSON.stringify(kept).slice(0, 220))
+    check('closing the project clears them', kept.emptied === 0, String(kept.emptied))
+    check('and opening it again brings them back',
+      JSON.stringify(kept.after) === JSON.stringify(kept.before),
+      `${JSON.stringify(kept.before)} -> ${JSON.stringify(kept.after)}`)
+    check('in the order they were in',
+      (kept.after ?? []).join(',') === (kept.before ?? []).join(','),
+      JSON.stringify(kept.after))
+    check('with the same one in front',
+      kept.activeAfter === kept.activeBefore,
+      `${kept.activeBefore} -> ${kept.activeAfter}`)
+  }
+
   console.log('\n[each file keeps its own place]')
   {
     /*
@@ -1784,58 +1863,60 @@ app.whenReady().then(async () => {
      * for a long while only switching between Writer and Code used it. Going
      * to another file and back opened at the top, however far in you were.
      *
-     * Measured from the page itself. The status bar shows the line the view
-     * last reported, and reporting rides on scroll events, which this window
-     * does not dispatch -- so the bar can still be showing the file before
-     * this one.
+     * Read from the page rather than the status bar, and moved by clicking a
+     * beat rather than by scrolling: this window is off the screen, produces
+     * no frames, and so never fires a scroll event -- setting scrollTop here
+     * moves the page and tells the view nothing.
      */
     const places = await js(`(async () => {${UNTIL}
       const page = () => document.querySelector('.writer-page');
-      // Which line is at the middle of the viewport, read off the page.
+      // Which line is at the middle of the viewport, counted the way the view
+      // counts it: direct children that stand for a line.
       const centre = () => {
         const el = page();
         if (!el) return null;
         const middle = el.scrollTop + el.clientHeight / 2;
         let best = null;
-        for (const node of el.querySelectorAll('[data-line]')) {
-          if (node.offsetTop <= middle) best = Number(node.dataset.line);
-          else break;
+        for (const kid of Array.from(el.children)) {
+          if (!kid.dataset || !kid.dataset.line) continue;
+          if (kid.offsetTop <= middle) best = Number(kid.dataset.line);
         }
         return best;
       };
-      const open = async (name) => {
+      // An episode and its beats share a wrapper in the sidebar. Clicking the
+      // episode row itself would fold the beats away, which is what it is for.
+      const beatsOf = (name) => {
         const row = Array.from(document.querySelectorAll('.episode-row'))
           .find(e => e.textContent.includes(name));
-        if (!row) return false;
-        row.click();
-        await until(() => (document.querySelector('.tab.active')?.textContent || '').includes(name));
-        await wait(900);
-        return true;
+        return row
+          ? Array.from(row.parentElement.querySelectorAll('.beat-row:not(.unwritten)'))
+          : [];
       };
       const toTab = async (name) => {
         const tab = Array.from(document.querySelectorAll('.tab'))
           .find(t => (t.textContent || '').includes(name));
         if (!tab) return false;
         tab.click();
-        await wait(1400);
+        await wait(1800);
         return true;
       };
 
-      if (!(await open('chapter_2'))) return { stage: 'no chapter_2' };
       Array.from(document.querySelectorAll('.mode-switch button'))
         .find(b => b.textContent === 'Writer')?.click();
-      await until(() => page()?.querySelector('[data-line]'));
-      await wait(500);
+      await wait(800);
+
+      const twoBeats = beatsOf('chapter_2');
+      const oneBeats = beatsOf('chapter_1');
+      if (twoBeats.length < 3 || oneBeats.length < 3)
+        return { stage: 'too few beats', two: twoBeats.length, one: oneBeats.length };
+
+      // Well into each file, by the route the outline uses.
+      twoBeats[twoBeats.length - 1].click();
+      await wait(2200);
       const twoAt = centre();
 
-      if (!(await open('chapter_1'))) return { stage: 'no chapter_1' };
-      await until(() => page()?.querySelector('[data-line]'));
-      // Somewhere well into this one, by the route the outline uses.
-      const beats = Array.from(document.querySelectorAll('.beat-row'));
-      const deep = beats[Math.min(14, beats.length - 1)];
-      if (!deep) return { stage: 'no beats' };
-      deep.click();
-      await wait(1500);
+      oneBeats[oneBeats.length - 1].click();
+      await wait(2200);
       const oneAt = centre();
 
       // Away, and back to each in turn.
@@ -1851,8 +1932,9 @@ app.whenReady().then(async () => {
 
     check('two files can be read at different depths', places.stage === 'ok' &&
       typeof places.oneAt === 'number' && places.oneAt > 40 &&
-      places.oneAt !== places.twoAt,
+      !near(places.oneAt, places.twoAt),
       JSON.stringify(places))
+    // The whole point: coming back is coming back, not starting again.
     check('going back to the first returns to its place',
       near(places.twoAgain, places.twoAt),
       `chapter_2 left at ${places.twoAt}, returned to ${places.twoAgain}`)
@@ -1867,7 +1949,7 @@ app.whenReady().then(async () => {
 
   console.log('\n[translate and proofread entry points]')
   const entry = await js(`(async () => {
-    const rightClick = (el) => el.dispatchEvent(new MouseEvent('contextmenu', {
+    const rightClick = (el) => el?.dispatchEvent(new MouseEvent('contextmenu', {
       bubbles: true, clientX: 200, clientY: 200
     }));
     const menuLabels = () => Array.from(document.querySelectorAll('.ctx-item')).map(b => b.textContent);
@@ -5173,4 +5255,10 @@ app.whenReady().then(async () => {
   win.destroy()
   await fs.rm(root, { recursive: true, force: true }).catch(() => {})
   app.exit(fail === 0 ? 0 : 1)
+}).catch((e) => {
+  // A probe that throws rejects the run, and a rejected run just sits
+  // there until the watchdog. Say what broke, and what passed before it.
+  console.log(`  FAIL the run itself threw -- ${e?.stack ?? e}`)
+  console.log(`${pass} passed, ${fail + 1} failed`)
+  app.exit(1)
 })

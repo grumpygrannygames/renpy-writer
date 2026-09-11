@@ -73,6 +73,40 @@ export type OpenTab = EpisodeTab | CharacterTab | OutlineTab
 
 export const isEpisodeTab = (t: OpenTab): t is EpisodeTab => t.kind === 'episode'
 
+/**
+ * What was open in a project, so going back to it is going back to it.
+ *
+ * What was open rather than what was in it: an episode is remembered by name
+ * and read from disk again on the way back, because the file may have moved on
+ * while the other project was in front -- pulled, edited on another machine,
+ * rewritten by a pass. Restoring the words that were in memory would quietly
+ * undo all of that.
+ *
+ * Held for the session only. Which files somebody had open is a small thing to
+ * lose when the app closes, and not worth a file on disk to keep.
+ */
+type RememberedTab =
+  | { kind: 'episode'; fileName: string }
+  | { kind: 'outline' }
+  | { kind: 'character'; characterKey: string; title: string }
+
+const tabMemory = new Map<string, { open: RememberedTab[]; active: string | null }>()
+
+function rememberTabs(state: AppState): void {
+  const root = state.opened?.project.renpyRoot
+  if (!root) return
+  tabMemory.set(root, {
+    open: state.tabs.map((t) =>
+      t.kind === 'episode'
+        ? { kind: 'episode', fileName: t.fileName }
+        : t.kind === 'outline'
+          ? { kind: 'outline' }
+          : { kind: 'character', characterKey: t.characterKey, title: t.title }
+    ),
+    active: state.activeTab
+  })
+}
+
 interface AppState {
   projects: ProjectRef[]
   /** The file the project list was read from, so an empty one can say where it looked. */
@@ -304,6 +338,10 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   openProject: async (root) => {
+    // Anything typed and not yet saved belongs to the project being left, and
+    // this is the last moment it can be written there.
+    await get().flushPendingSaves()
+    rememberTabs(get())
     set({ loading: true, error: null })
     try {
       const opened = await api.openProject(root)
@@ -317,6 +355,8 @@ export const useStore = create<AppState>((set, get) => ({
         api.readReference(root)
       ])
       set({ characters: cast, reference, referenceFor: root })
+      // After the reference, so a character tab has a profile to show.
+      await restoreTabs(root, get, set)
       await get().refreshProjects()
     } catch (e) {
       set({ error: message(e) })
@@ -326,6 +366,7 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   closeProject: () => {
+    rememberTabs(get())
     forgetReference()
     set({
       opened: null,
@@ -879,6 +920,38 @@ async function reloadTabs(
       )
     }))
   }
+}
+
+/**
+ * Open again what was open here before.
+ *
+ * Episodes the project no longer has are dropped rather than reopened as an
+ * error, and the tab that was in front comes back in front if it is still
+ * among them.
+ */
+async function restoreTabs(
+  root: string,
+  get: () => AppState,
+  set: (partial: Partial<AppState>) => void
+): Promise<void> {
+  const remembered = tabMemory.get(root)
+  if (!remembered) return
+
+  for (const tab of remembered.open) {
+    const opened = get().opened
+    if (!opened) return
+    if (tab.kind === 'episode') {
+      if (!opened.episodes.some((e) => e.fileName === tab.fileName)) continue
+      await get().openEpisode(tab.fileName)
+    } else if (tab.kind === 'outline') {
+      get().openOutlineTab()
+    } else {
+      get().openCharacterTab(tab.characterKey, tab.title)
+    }
+  }
+
+  const active = remembered.active
+  if (active && get().tabs.some((t) => t.key === active)) set({ activeTab: active })
 }
 
 /**
