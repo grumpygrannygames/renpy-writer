@@ -1777,6 +1777,94 @@ app.whenReady().then(async () => {
   check('clicking a line opens an editor on a large file', typing.openedEditor)
   check('editor opens fast (' + Math.round(typing.ms) + 'ms)', typing.ms < 1000, Math.round(typing.ms) + 'ms')
 
+  console.log('\n[each file keeps its own place]')
+  {
+    /*
+     * Where you are reading is kept per file and updated as you scroll, but
+     * for a long while only switching between Writer and Code used it. Going
+     * to another file and back opened at the top, however far in you were.
+     *
+     * Measured from the page itself. The status bar shows the line the view
+     * last reported, and reporting rides on scroll events, which this window
+     * does not dispatch -- so the bar can still be showing the file before
+     * this one.
+     */
+    const places = await js(`(async () => {${UNTIL}
+      const page = () => document.querySelector('.writer-page');
+      // Which line is at the middle of the viewport, read off the page.
+      const centre = () => {
+        const el = page();
+        if (!el) return null;
+        const middle = el.scrollTop + el.clientHeight / 2;
+        let best = null;
+        for (const node of el.querySelectorAll('[data-line]')) {
+          if (node.offsetTop <= middle) best = Number(node.dataset.line);
+          else break;
+        }
+        return best;
+      };
+      const open = async (name) => {
+        const row = Array.from(document.querySelectorAll('.episode-row'))
+          .find(e => e.textContent.includes(name));
+        if (!row) return false;
+        row.click();
+        await until(() => (document.querySelector('.tab.active')?.textContent || '').includes(name));
+        await wait(900);
+        return true;
+      };
+      const toTab = async (name) => {
+        const tab = Array.from(document.querySelectorAll('.tab'))
+          .find(t => (t.textContent || '').includes(name));
+        if (!tab) return false;
+        tab.click();
+        await wait(1400);
+        return true;
+      };
+
+      if (!(await open('chapter_2'))) return { stage: 'no chapter_2' };
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Writer')?.click();
+      await until(() => page()?.querySelector('[data-line]'));
+      await wait(500);
+      const twoAt = centre();
+
+      if (!(await open('chapter_1'))) return { stage: 'no chapter_1' };
+      await until(() => page()?.querySelector('[data-line]'));
+      // Somewhere well into this one, by the route the outline uses.
+      const beats = Array.from(document.querySelectorAll('.beat-row'));
+      const deep = beats[Math.min(14, beats.length - 1)];
+      if (!deep) return { stage: 'no beats' };
+      deep.click();
+      await wait(1500);
+      const oneAt = centre();
+
+      // Away, and back to each in turn.
+      if (!(await toTab('chapter_2'))) return { stage: 'no chapter_2 tab' };
+      const twoAgain = centre();
+      if (!(await toTab('chapter_1'))) return { stage: 'no chapter_1 tab' };
+      const oneAgain = centre();
+
+      return { stage: 'ok', twoAt, oneAt, twoAgain, oneAgain };
+    })()`)
+
+    const near = (a, b) => typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) <= 3
+
+    check('two files can be read at different depths', places.stage === 'ok' &&
+      typeof places.oneAt === 'number' && places.oneAt > 40 &&
+      places.oneAt !== places.twoAt,
+      JSON.stringify(places))
+    check('going back to the first returns to its place',
+      near(places.twoAgain, places.twoAt),
+      `chapter_2 left at ${places.twoAt}, returned to ${places.twoAgain}`)
+    check('and back to the second returns to its own',
+      near(places.oneAgain, places.oneAt),
+      `chapter_1 left at ${places.oneAt}, returned to ${places.oneAgain}`)
+    check('neither took the other place',
+      places.stage === 'ok' && !near(places.oneAgain, places.twoAt) &&
+      !near(places.twoAgain, places.oneAt),
+      JSON.stringify(places))
+  }
+
   console.log('\n[translate and proofread entry points]')
   const entry = await js(`(async () => {
     const rightClick = (el) => el.dispatchEvent(new MouseEvent('contextmenu', {

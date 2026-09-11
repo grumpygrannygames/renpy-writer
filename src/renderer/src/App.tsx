@@ -122,6 +122,29 @@ export default function App() {
   }, [flushPendingSaves, refreshOpenTabs, refreshPreviews])
 
   /*
+   * Coming back to a file returns to where you were reading it.
+   *
+   * Where you were is already kept, per file, and updated as you scroll --
+   * only nothing used it except switching between Writer and Code. Switch to
+   * another file and back and you were at the top again, seven hundred lines
+   * from where you had been working.
+   *
+   * Once per arrival: the anchor changes constantly while you read, and
+   * acting on every change would scroll the page out from under you.
+   */
+  const restoredFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!activeTab) {
+      restoredFor.current = null
+      return
+    }
+    if (restoredFor.current === activeTab) return
+    restoredFor.current = activeTab
+    const line = anchorLines[activeTab]
+    if (line) setReveal({ file: activeTab, line })
+  }, [activeTab, anchorLines])
+
+  /*
    * A tab opened from somewhere else -- the outline, a character cue -- may be
    * past the end of a scrolled row, so bring it back into view.
    */
