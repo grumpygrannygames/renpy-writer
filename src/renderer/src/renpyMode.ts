@@ -1,4 +1,10 @@
-import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
+import {
+  HighlightStyle,
+  StreamLanguage,
+  indentUnit,
+  syntaxHighlighting
+} from '@codemirror/language'
+import { EditorState } from '@codemirror/state'
 import { tags as t } from '@lezer/highlight'
 import { EditorView } from '@codemirror/view'
 
@@ -154,4 +160,24 @@ const theme = EditorView.theme(
   { dark: true }
 )
 
-export const renpySetup = [renpyLanguage, syntaxHighlighting(highlight), theme]
+/**
+ * Four spaces to a level, and never a tab.
+ *
+ * Not a preference to be set per project: Ren'Py refuses a script with a
+ * tab character in it outright -- "Tab characters are not allowed in Ren'Py
+ * scripts" -- and four is what every script it ships uses, from the new
+ * project template to the launcher's own source, without exception. The
+ * editor's own default is two, which is how Tab came to disagree with every
+ * other line the app writes.
+ *
+ * tabSize only says how wide a tab is drawn. Nothing here makes one, but a
+ * file that arrived with one should not look narrower than it reads.
+ */
+const indentation = [indentUnit.of('    '), EditorState.tabSize.of(4)]
+
+export const renpySetup = [
+  renpyLanguage,
+  syntaxHighlighting(highlight),
+  theme,
+  indentation
+]

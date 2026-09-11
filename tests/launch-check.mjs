@@ -1947,6 +1947,59 @@ app.whenReady().then(async () => {
       JSON.stringify(places))
   }
 
+  console.log('\n[what Tab writes]')
+  {
+    /*
+     * Ren'Py settles this one: a tab character anywhere in a script is a parse
+     * error -- "Tab characters are not allowed in Ren'Py scripts" -- and every
+     * script it ships, from the new-project template to the launcher's own
+     * source, indents by four spaces. The editor's own default is two, which
+     * is how Tab came to disagree with every other line the app writes.
+     */
+    const tabbed = await js(`(async () => {${UNTIL}
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Code')?.click();
+      const content = await until(() => document.querySelector('.cm-content'));
+      if (!content) return { stage: 'no code view' };
+      await wait(600);
+
+      // To the top of the file first. The editor draws only what is on screen,
+      // and the section before this one left the view a thousand lines in --
+      // so the line Tab acts on has to be one that is actually rendered.
+      // One modifier per event: the editor matches the whole combination, so
+      // ctrl and meta together is a chord nothing is bound to. Both are sent
+      // because the suite runs on Windows here and on somebody Mac there.
+      content.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', ctrlKey: true, bubbles: true }));
+      content.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', metaKey: true, bubbles: true }));
+      await wait(700);
+
+      const firstLine = () => document.querySelector('.cm-line')?.textContent ?? null;
+      const before = firstLine();
+      content.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
+      await wait(700);
+      const after = firstLine();
+
+      // Put the file back: this runs against the same script the rest of the
+      // suite reads.
+      content.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+      await wait(700);
+
+      return {
+        stage: 'ok', before, after,
+        added: before !== null && after !== null ? after.length - before.length : null,
+        tabChar: after !== null ? after.indexOf(String.fromCharCode(9)) !== -1 : null,
+        restored: firstLine()
+      };
+    })()`)
+
+    check('Tab indents by four', tabbed.added === 4, JSON.stringify(tabbed))
+    check('and writes spaces, because a tab is a parse error',
+      tabbed.tabChar === false, JSON.stringify(tabbed))
+    check('and undo takes it back out',
+      tabbed.restored === tabbed.before,
+      `${JSON.stringify(tabbed.before)} -> ${JSON.stringify(tabbed.restored)}`)
+  }
+
   console.log('\n[translate and proofread entry points]')
   const entry = await js(`(async () => {
     const rightClick = (el) => el?.dispatchEvent(new MouseEvent('contextmenu', {
