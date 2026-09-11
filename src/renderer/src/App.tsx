@@ -19,6 +19,7 @@ import PhoneNav, { type Pane } from './components/PhoneNav'
 import RemoveBeatDialog, { type PendingRemoval } from './components/RemoveBeatDialog'
 import { usePhoneLayout } from './usePhoneLayout'
 import { api } from './api'
+import { images as imageLookups } from './previewCache'
 
 export default function App() {
   const opened = useStore((s) => s.opened)
@@ -29,6 +30,7 @@ export default function App() {
   const setMode = useStore((s) => s.setMode)
   const setActiveTab = useStore((s) => s.setActiveTab)
   const closeTab = useStore((s) => s.closeTab)
+  const moveTab = useStore((s) => s.moveTab)
   const updateTabContent = useStore((s) => s.updateTabContent)
   const saveActiveTab = useStore((s) => s.saveActiveTab)
   const openEpisode = useStore((s) => s.openEpisode)
@@ -58,14 +60,15 @@ export default function App() {
   const [pane, setPane] = useState<Pane>('script')
   const [showSync, setShowSync] = useState(false)
   const [removingBeat, setRemovingBeat] = useState<PendingRemoval | null>(null)
+  const [draggingTab, setDraggingTab] = useState<string | null>(null)
+  const tabStrip = useRef<HTMLDivElement>(null)
   const [renderEpisodeId, setRenderEpisodeId] = useState<string | null>(null)
   const [passRequest, setPassRequest] = useState<{
     mode: PassMode
     fileName: string
     beat: { label: string; from: number; to: number } | null
   } | null>(null)
-  // Data URLs are costly to produce, so remember them for the session.
-  const imageCache = useRef(new Map<string, ImageLookup | null>())
+  const refreshPreviews = useStore((s) => s.refreshPreviews)
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -97,7 +100,11 @@ export default function App() {
      * somebody typed is worse than showing them something slightly stale.
      */
     const onVisible = (): void => {
-      if (document.visibilityState === 'visible') void refreshOpenTabs()
+      if (document.visibilityState !== 'visible') return
+      void refreshOpenTabs()
+      // Coming back is when a picture has most likely been redrawn in another
+      // program, so the folder is read again and every preview asks afresh.
+      void refreshPreviews()
     }
     const onVisibility = (): void => {
       onHidden()
@@ -112,7 +119,18 @@ export default function App() {
       window.removeEventListener('pagehide', onHidden)
       window.removeEventListener('focus', onVisible)
     }
-  }, [flushPendingSaves, refreshOpenTabs])
+  }, [flushPendingSaves, refreshOpenTabs, refreshPreviews])
+
+  /*
+   * A tab opened from somewhere else -- the outline, a character cue -- may be
+   * past the end of a scrolled row, so bring it back into view.
+   */
+  useEffect(() => {
+    if (!activeTab) return
+    tabStrip.current
+      ?.querySelector(`[data-tab="${CSS.escape(activeTab)}"]`)
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [activeTab, tabs.length])
 
   if (!opened) return <ProjectGate />
 
@@ -124,7 +142,7 @@ export default function App() {
   const activeParsed = episode ? parsed[episode.fileName] : undefined
 
   async function lookupImage(name: string): Promise<ImageLookup | null> {
-    const cache = imageCache.current
+    const cache = imageLookups
     if (cache.has(name)) return cache.get(name) ?? null
     const result = await api.resolveImage(opened!.project.renpyRoot, name)
     cache.set(name, result)
@@ -214,11 +232,64 @@ export default function App() {
 
       <main className={'main' + paneClass('script')}>
         <div className="tabbar">
-          {tabs.map((t) => (
+          {/*
+            * The tabs scroll; everything to the right of them does not. With
+            * enough files open the row used to push the view buttons off the
+            * end of the window, which is a poor trade: those are needed all
+            * the time, and the twelfth tab is not.
+            */}
+          <div
+            className="tab-strip"
+            ref={tabStrip}
+            // The gaps between tabs, and the room past the last one, are part
+            // of the row: refusing the drag there is the same wrong cursor.
+            onDragOver={(e) => {
+              if (!draggingTab) return
+              e.preventDefault()
+              e.dataTransfer.dropEffect = 'move'
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              setDraggingTab(null)
+            }}
+          >
+          {tabs.map((t, i) => (
             <div
               key={t.key}
-              className={'tab' + (t.key === activeTab ? ' active' : '')}
+              data-tab={t.key}
+              className={
+                'tab' +
+                (t.key === activeTab ? ' active' : '') +
+                (t.key === draggingTab ? ' dragging' : '')
+              }
               onClick={() => setActiveTab(t.key)}
+              draggable
+              onDragStart={(e) => {
+                setDraggingTab(t.key)
+                e.dataTransfer.effectAllowed = 'move'
+                // Firefox will not start a drag without something on it.
+                e.dataTransfer.setData('text/plain', t.key)
+              }}
+              onDragEnd={() => setDraggingTab(null)}
+              onDragOver={(e) => {
+                if (!draggingTab) return
+                /*
+                 * Accepted even over the tab being carried. A drop target that
+                 * does not preventDefault is refusing the drag, and Windows
+                 * draws the cursor to say so -- which is the cursor somebody
+                 * sees for the whole drag, since the tab under the pointer is
+                 * usually the one in hand.
+                 */
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'move'
+                // Reordered as it passes rather than on the drop, so the row
+                // shows where the tab is going while it is still moving.
+                if (draggingTab !== t.key) moveTab(draggingTab, i)
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                setDraggingTab(null)
+              }}
             >
               {isDirty(t) && <span className="dirty" title="Unsaved changes" />}
               {t.kind !== 'episode' && <span className="tab-kind">{t.kind}</span>}
@@ -234,6 +305,7 @@ export default function App() {
               </span>
             </div>
           ))}
+          </div>
 
           <div className="mode-switch">
             <button

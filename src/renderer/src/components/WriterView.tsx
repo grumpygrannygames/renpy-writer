@@ -17,6 +17,8 @@ import { centreIndex, nearestLine } from '../anchor'
 import { readableOn } from '../color'
 import { buildLabeller, type Labeller } from '../characterLabel'
 import { matchSpeakers } from '../speakerMatch'
+import { portraits as portraitCache } from '../previewCache'
+import { useStore } from '../state/store'
 import { freeName } from '@shared/renpy/names'
 import {
   parseDocument,
@@ -977,9 +979,11 @@ const Block = memo(function Block(props: BlockProps) {
 // -------------------------------------------------------- expression picker
 
 /** Data URLs are expensive to produce, so keep them for the session. */
-const portraitCache = new Map<string, string | null>()
 
 function usePortrait(renpyRoot: string, relPath: string | undefined): string | null {
+  // Re-read when the pictures are refreshed: the file behind this one may have
+  // been redrawn while the app was in the background.
+  const nonce = useStore((s) => s.previewNonce)
   const [src, setSrc] = useState<string | null>(() =>
     relPath ? (portraitCache.get(renpyRoot + '|' + relPath) ?? null) : null
   )
@@ -1003,7 +1007,7 @@ function usePortrait(renpyRoot: string, relPath: string | undefined): string | n
     return () => {
       live = false
     }
-  }, [renpyRoot, relPath])
+  }, [renpyRoot, relPath, nonce])
 
   return src
 }

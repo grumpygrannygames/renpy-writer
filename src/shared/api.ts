@@ -349,6 +349,9 @@ export interface RenpyWriterApi {
     characters: DiscoveredCharacter[]
   }>
 
+  /** Forget what is in game/images, so the next preview reads the folder. */
+  forgetImages(renpyRoot: string): Promise<void>
+
   readReference(renpyRoot: string): Promise<Reference>
   writeReference(renpyRoot: string, reference: Reference): Promise<void>
 
@@ -434,6 +437,7 @@ export const IPC = {
   scanCharacters: 'project:characters',
   readPortrait: 'project:portrait',
   resolveImage: 'project:image',
+  forgetImages: 'project:forgetImages',
   renameCharacter: 'project:renameCharacter',
   defineCharacter: 'project:defineCharacter',
   renameVariable: 'project:renameVariable',

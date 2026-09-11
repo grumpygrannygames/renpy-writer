@@ -257,11 +257,45 @@ label.check input {
   border-bottom: 1px solid var(--border);
   min-height: 36px;
 }
+
+/*
+ * Only the tabs scroll.
+ *
+ * They used to share one row with the view buttons, so opening a twelfth file
+ * pushed Writer and Code off the end of the window -- the controls needed all
+ * the time went first, and the tab that caused it stayed. min-width:0 is what
+ * lets a flex child be narrower than its contents and actually scroll.
+ */
+.tab-strip {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+.tab-strip::-webkit-scrollbar {
+  height: 3px;
+}
+.tab-strip::-webkit-scrollbar-thumb {
+  background: var(--border);
+}
+.tab-strip::-webkit-scrollbar-track {
+  background: transparent;
+}
 .tab {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 0 12px;
+  /*
+   * Keep their own width. A flex item gives way by default, so without this
+   * the tabs squeeze thinner and thinner as more open -- names disappearing
+   * one letter at a time -- instead of the row scrolling.
+   */
+  flex: none;
+  max-width: 260px;
   border-right: 1px solid var(--border);
   cursor: pointer;
   font-size: 13px;
@@ -271,10 +305,19 @@ label.check input {
 .tab:hover {
   background: var(--bg-hover);
 }
+/* The one being carried, so the gap it leaves is legible as its own. */
+.tab.dragging {
+  opacity: 0.4;
+}
 .tab.active {
   background: var(--bg);
   color: var(--text);
   box-shadow: inset 0 2px 0 var(--accent);
+}
+/* A long file name gives way rather than the tab growing without end. */
+.tab > span:not(.close):not(.dirty):not(.tab-kind) {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .tab .close {
   color: var(--text-faint);
@@ -292,7 +335,7 @@ label.check input {
 }
 
 .mode-switch {
-  margin-left: auto;
+  flex: none;
   display: flex;
   align-items: center;
   gap: 6px;

@@ -29,6 +29,7 @@ const api: RenpyWriterApi = {
   renameVariable: (root: string, varName: string, changes: { varName?: string; name?: string }) =>
     ipcRenderer.invoke(IPC.renameVariable, root, varName, changes),
   resolveImage: (root: string, name: string) => ipcRenderer.invoke(IPC.resolveImage, root, name),
+  forgetImages: (root: string) => ipcRenderer.invoke(IPC.forgetImages, root),
   readReference: (root: string) => ipcRenderer.invoke(IPC.readReference, root),
   writeReference: (root: string, reference: Reference) =>
     ipcRenderer.invoke(IPC.writeReference, root, reference),

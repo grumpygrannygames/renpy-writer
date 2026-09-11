@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { shouldWriteReference } from './referenceSave'
+import { forgetPreviews } from '../previewCache'
 import type {
   CreateEpisodeInput,
   CreateProjectInput,
@@ -93,6 +94,12 @@ interface AppState {
    * at the same place in the script rather than at the same caret.
    */
   anchorLines: Record<string, number>
+  /**
+   * Bumped whenever the pictures are re-read, so anything showing one knows
+   * to ask again. Clearing the caches alone would not: a portrait already on
+   * screen is held in the component that drew it.
+   */
+  previewNonce: number
 
   reference: Reference
   /**
@@ -159,9 +166,13 @@ interface AppState {
   clearPass: () => void
   closeTab: (key: string) => void
   setActiveTab: (key: string) => void
+  /** Put a tab somewhere else in the row. */
+  moveTab: (key: string, toIndex: number) => void
   setMode: (mode: EditorMode) => void
   setAnchorLine: (fileName: string, line: number) => void
   /** Say why something did not happen. Shown until it is dismissed. */
+  /** Read the images folder again, and drop every picture already fetched. */
+  refreshPreviews: () => Promise<void>
   reportError: (message: string) => void
   dismissError: () => void
 
@@ -219,6 +230,7 @@ export const useStore = create<AppState>((set, get) => ({
   saving: null,
   saveError: null,
   anchorLines: {},
+  previewNonce: 0,
   reference: EMPTY_REFERENCE,
   referenceFor: null,
   lastMove: null,
@@ -591,7 +603,25 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setActiveTab: (key) => set({ activeTab: key }),
+
+  moveTab: (key, toIndex) =>
+    set((s) => {
+      const from = s.tabs.findIndex((t) => t.key === key)
+      const to = Math.max(0, Math.min(toIndex, s.tabs.length - 1))
+      if (from === -1 || from === to) return {}
+      const tabs = [...s.tabs]
+      const [moved] = tabs.splice(from, 1)
+      tabs.splice(to, 0, moved)
+      return { tabs }
+    }),
   setMode: (mode) => set({ mode }),
+
+  refreshPreviews: async () => {
+    forgetPreviews()
+    set((s) => ({ previewNonce: s.previewNonce + 1 }))
+    const root = get().opened?.project.renpyRoot
+    if (root) await api.forgetImages(root)
+  },
 
   reportError: (message) => set({ error: message }),
   dismissError: () => set({ error: null }),

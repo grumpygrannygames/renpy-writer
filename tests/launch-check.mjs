@@ -296,7 +296,7 @@ app.whenReady().then(async () => {
   check('React mounted', shell.mounted)
   check('project gate rendered', shell.gate)
   check('heading reads the app name', shell.heading === 'Ren’Py Writer', String(shell.heading))
-  check('api exposes all 38 methods', shell.apiMethods === 38, String(shell.apiMethods))
+  check('api exposes all 39 methods', shell.apiMethods === 39, String(shell.apiMethods))
 
   console.log('\n[a broken bridge says so]')
   {
@@ -860,7 +860,17 @@ app.whenReady().then(async () => {
 
   console.log('\n[expression preview]')
   const preview = await js(`(async () => {
-    const trigger = document.querySelector('.expr-trigger');
+    /*
+     * Ava's picker, not whichever one happens to be first in the document.
+     * Which file is open here depends on what the sections above left behind,
+     * and a character with two expressions instead of seven fails a check
+     * about the list being populated while telling nobody why.
+     */
+    const trigger =
+      Array.from(document.querySelectorAll('.blk-dialogue'))
+        .filter(b => (b.querySelector('.blk-character-name')?.textContent || '').startsWith('AVA'))
+        .map(b => b.querySelector('.expr-trigger'))
+        .find(Boolean) || document.querySelector('.expr-trigger');
     if (!trigger) return { stage: 'no picker' };
     trigger.click();
     await new Promise(r => setTimeout(r, 250));
@@ -4815,6 +4825,164 @@ app.whenReady().then(async () => {
       if (at !== -1) await window.api.writeEpisode(root, 'chapter_2.rpy', text.slice(0, at));
     })()`)
     await sleep(600)
+  }
+
+  console.log('\n[the row of open tabs]')
+  {
+    // Open everything there is, so the row has something to do.
+    await js(`(async () => {${UNTIL}
+      for (const name of ['chapter_1', 'chapter_2', 'episode_draft']) {
+        const row = Array.from(document.querySelectorAll('.episode-row'))
+          .find(e => e.textContent.includes(name));
+        if (row) { row.click(); await wait(500); }
+      }
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Plot')?.click();
+      await wait(600);
+      // Back onto an episode, which is the state this is about: the Writer and
+      // Code buttons are hidden while the plot board is open, and without them
+      // the row is 110px narrower -- wide enough for four tabs to fit, and to
+      // measure a crowding that is not happening.
+      Array.from(document.querySelectorAll('.tab'))
+        .find(t => (t.textContent || '').includes('chapter_1'))?.click();
+      await wait(600);
+    })()`)
+
+    /*
+     * Narrow enough that the tabs cannot all fit, and wide enough to still be
+     * the desktop layout -- which is the case this is about. Below 820px the
+     * app lays itself out as a phone: the sidebar goes, and Plot, Sync and
+     * Reference move to the bar along the bottom, leaving a row roomy enough
+     * that four tabs fit and nothing is crowded at all.
+     */
+    win.setSize(900, 900)
+    await sleep(900)
+
+    const cramped = await js(`(() => {
+      const strip = document.querySelector('.tab-strip');
+      const seg = document.querySelector('.mode-switch');
+      if (!strip || !seg) return { stage: 'no row' };
+      const box = seg.getBoundingClientRect();
+      return {
+        stage: 'ok',
+        tabs: document.querySelectorAll('.tab').length,
+        overflowing: strip.scrollWidth > strip.clientWidth + 1,
+        stripClient: strip.clientWidth,
+        stripScroll: strip.scrollWidth,
+        switchWidth: seg.clientWidth,
+        // The switch has to be on screen, whole.
+        switchRight: Math.round(box.right),
+        windowWidth: document.documentElement.clientWidth,
+        switchInside: box.left >= 0 && box.right <= document.documentElement.clientWidth + 1,
+        // And it must not be the thing that scrolls.
+        switchInsideStrip: strip.contains(seg)
+      };
+    })()`)
+
+    check('the row has more tabs than fit', cramped.stage === 'ok' && cramped.tabs >= 4,
+      JSON.stringify(cramped))
+    check('so the tabs are what overflows', cramped.overflowing === true,
+      JSON.stringify(cramped))
+    check('the view buttons stay on screen',
+      cramped.switchInside === true,
+      `switch right edge ${cramped.switchRight} of ${cramped.windowWidth}`)
+    check('and are not carried along by the scrolling',
+      cramped.switchInsideStrip === false, String(cramped.switchInsideStrip))
+
+    // A tab opened from the outline may be past the end of a scrolled row.
+    const reached = await js(`(async () => {${UNTIL}
+      const strip = document.querySelector('.tab-strip');
+      strip.scrollLeft = 0;
+      await wait(300);
+      const row = Array.from(document.querySelectorAll('.episode-row'))
+        .find(e => e.textContent.includes('chapter_1'));
+      if (!row) return { stage: 'no episode' };
+      row.click();
+      await wait(900);
+      const tab = document.querySelector('.tab.active');
+      const t = tab.getBoundingClientRect();
+      const s = strip.getBoundingClientRect();
+      return {
+        stage: 'ok',
+        scrolled: strip.scrollLeft,
+        visible: t.left >= s.left - 1 && t.right <= s.right + 1
+      };
+    })()`)
+    check('opening a file brings its tab into view', reached.visible === true,
+      JSON.stringify(reached))
+
+    win.setSize(1400, 900)
+    await sleep(900)
+
+    // --- carrying a tab along the row ------------------------------------
+    const dragged = await js(`(async () => {${UNTIL}
+      const names = () => Array.from(document.querySelectorAll('.tab'))
+        .map(t => t.getAttribute('data-tab'));
+      const before = names();
+      if (before.length < 3) return { stage: 'too few tabs', before };
+
+      const tabs = Array.from(document.querySelectorAll('.tab'));
+      const moving = tabs[0];
+      const onto = tabs[2];
+      const dt = new DataTransfer();
+      moving.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+      await wait(200);
+      const carried = document.querySelector('.tab.dragging')?.getAttribute('data-tab') ?? null;
+
+      /*
+       * Whether the row will have the drag, everywhere along it.
+       *
+       * A drop target accepts a drag by calling preventDefault on dragover,
+       * and refuses by not doing so -- at which point the pointer becomes the
+       * circle-and-slash that says this cannot be dropped here. The tab under
+       * the pointer is usually the one being carried, so refusing there means
+       * that cursor for the whole drag.
+       */
+      const accepts = (el) => {
+        const ev = new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt });
+        el.dispatchEvent(ev);
+        return ev.defaultPrevented;
+      };
+      const acceptedOnItself = accepts(moving);
+      const acceptedOnAnother = accepts(onto);
+      const acceptedOnTheRow = accepts(document.querySelector('.tab-strip'));
+
+      onto.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt }));
+      await wait(300);
+      const after = names();
+      onto.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: dt }));
+      moving.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+      await wait(300);
+
+      return {
+        stage: 'ok', before, after, carried,
+        acceptedOnItself, acceptedOnAnother, acceptedOnTheRow,
+        settled: names(),
+        stillDragging: !!document.querySelector('.tab.dragging')
+      };
+    })()`)
+
+    check('a tab can be picked up', dragged.stage === 'ok' && dragged.carried === dragged.before?.[0],
+      JSON.stringify(dragged).slice(0, 200))
+    check('and carried along the row',
+      dragged.after?.[2] === dragged.before?.[0], JSON.stringify(dragged.after))
+    check('the others closed up behind it',
+      dragged.after?.[0] === dragged.before?.[1] && dragged.after?.[1] === dragged.before?.[2],
+      JSON.stringify(dragged.after))
+    check('nothing was lost or gained',
+      JSON.stringify([...(dragged.after ?? [])].sort()) ===
+      JSON.stringify([...(dragged.before ?? [])].sort()), JSON.stringify(dragged.after))
+    check('it stays where it was put', JSON.stringify(dragged.settled) ===
+      JSON.stringify(dragged.after), JSON.stringify(dragged.settled))
+    check('and is no longer being carried', dragged.stillDragging === false,
+      String(dragged.stillDragging))
+    // Anywhere the drag is refused, the pointer says it cannot be dropped.
+    check('the row takes the drag over another tab',
+      dragged.acceptedOnAnother === true, String(dragged.acceptedOnAnother))
+    check('over the tab being carried itself',
+      dragged.acceptedOnItself === true, String(dragged.acceptedOnItself))
+    check('and over the room around them',
+      dragged.acceptedOnTheRow === true, String(dragged.acceptedOnTheRow))
   }
 
   console.log('\n[a linear episode after a reorder]')

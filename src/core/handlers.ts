@@ -54,7 +54,7 @@ import { freeName } from '@shared/renpy/names'
 import { renameCharacter } from '@core/renpy/rename'
 import { renameVariable } from '@core/renpy/renameVariable'
 import { renameLabelEverywhere } from '@core/renpy/renameLabel'
-import { readPortrait, resolveImageName } from '@core/renpy/images'
+import { forgetImageIndex, readPortrait, resolveImageName } from '@core/renpy/images'
 import {
   newSidecarProject,
   readOutline,
@@ -434,6 +434,19 @@ export function registerHandlers(register: Register, host: HostServices): void {
 
   register(IPC.resolveImage, (root: string, name: string) =>
     resolveImageName(root, name))
+
+  /**
+   * Read the images folder again.
+   *
+   * What is in game/images is worked out once and kept, because walking it is
+   * not free and it rarely changes while the app is open. "Rarely" is not
+   * "never": a picture redrawn in another program, or a folder of renders
+   * brought in by this one, and the index is describing a folder that no
+   * longer looks like that.
+   */
+  register(IPC.forgetImages, (root: string) => {
+    forgetImageIndex(root)
+  })
 
   register(IPC.readReference, (root: string) => readReference(ws(root)))
 
@@ -860,6 +873,9 @@ export function registerHandlers(register: Register, host: HostServices): void {
         targetSubdir: ep.renders?.targetSubdir ?? '',
         sourceDir
       }
+      // Whatever is written below lands in game/images, so the index of that
+      // folder is out of date the moment this succeeds.
+      forgetImageIndex(root)
       return convertBatch(root, config, names, {
         encoder: machine.renderEncoder ?? 'builtin',
         ffmpegPath: machine.ffmpegPath,
