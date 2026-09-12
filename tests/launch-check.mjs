@@ -1947,7 +1947,7 @@ app.whenReady().then(async () => {
       JSON.stringify(places))
   }
 
-  console.log('\n[what Tab writes]')
+  console.log('\n[what Tab writes, and what a paste brings in]')
   {
     /*
      * Ren'Py settles this one: a tab character anywhere in a script is a parse
@@ -1955,17 +1955,20 @@ app.whenReady().then(async () => {
      * script it ships, from the new-project template to the launcher's own
      * source, indents by four spaces. The editor's own default is two, which
      * is how Tab came to disagree with every other line the app writes.
+     *
+     * The key is only half of it. A paste can carry tabs in from anywhere, and
+     * that failure surfaces when the game is run rather than here.
      */
     const tabbed = await js(`(async () => {${UNTIL}
+      const TAB = String.fromCharCode(9);
+      const LF = String.fromCharCode(10);
+
       Array.from(document.querySelectorAll('.mode-switch button'))
         .find(b => b.textContent === 'Code')?.click();
       const content = await until(() => document.querySelector('.cm-content'));
       if (!content) return { stage: 'no code view' };
       await wait(600);
 
-      // To the top of the file first. The editor draws only what is on screen,
-      // and the section before this one left the view a thousand lines in --
-      // so the line Tab acts on has to be one that is actually rendered.
       // One modifier per event: the editor matches the whole combination, so
       // ctrl and meta together is a chord nothing is bound to. Both are sent
       // because the suite runs on Windows here and on somebody Mac there.
@@ -1973,22 +1976,48 @@ app.whenReady().then(async () => {
       content.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', metaKey: true, bubbles: true }));
       await wait(700);
 
-      const firstLine = () => document.querySelector('.cm-line')?.textContent ?? null;
+      const lines = () => Array.from(document.querySelectorAll('.cm-line')).map(l => l.textContent);
+      const firstLine = () => lines()[0] ?? null;
+      const undo = async () => {
+        content.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+        await wait(700);
+      };
+
       const before = firstLine();
       content.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
       await wait(700);
       const after = firstLine();
-
       // Put the file back: this runs against the same script the rest of the
       // suite reads.
-      content.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
-      await wait(700);
+      await undo();
+      const restored = firstLine();
+
+      // A scene indented with tabs, the way another editor would hand it over.
+      const paste = (text) => {
+        const dt = new DataTransfer();
+        dt.setData('text/plain', text);
+        content.dispatchEvent(new ClipboardEvent('paste', {
+          clipboardData: dt, bubbles: true, cancelable: true
+        }));
+      };
+      paste('label pasted_in:' + LF + TAB + 'pass' + LF + TAB + TAB + 'deeper' + LF);
+      await wait(900);
+      const pasted = lines().slice(0, 3);
+      await undo();
+      const afterUndo = firstLine();
+
+      // And one with no tab in it, which the editor must still handle itself.
+      paste('# plain' + LF);
+      await wait(900);
+      const plain = firstLine();
+      await undo();
 
       return {
-        stage: 'ok', before, after,
+        stage: 'ok', before, after, restored, pasted, afterUndo, plain,
         added: before !== null && after !== null ? after.length - before.length : null,
-        tabChar: after !== null ? after.indexOf(String.fromCharCode(9)) !== -1 : null,
-        restored: firstLine()
+        tabChar: after !== null ? after.indexOf(TAB) !== -1 : null,
+        pastedTab: pasted.some(l => l.indexOf(TAB) !== -1),
+        ended: firstLine()
       };
     })()`)
 
@@ -1998,6 +2027,23 @@ app.whenReady().then(async () => {
     check('and undo takes it back out',
       tabbed.restored === tabbed.before,
       `${JSON.stringify(tabbed.before)} -> ${JSON.stringify(tabbed.restored)}`)
+
+    check('a pasted tab arrives as spaces', tabbed.pastedTab === false,
+      JSON.stringify(tabbed.pasted))
+    check('one level deep is four, two levels is eight',
+      JSON.stringify(tabbed.pasted) ===
+        JSON.stringify(['label pasted_in:', '    pass', '        deeper']),
+      JSON.stringify(tabbed.pasted))
+    check('and the whole paste undoes in one go',
+      tabbed.afterUndo === tabbed.before,
+      `${JSON.stringify(tabbed.before)} -> ${JSON.stringify(tabbed.afterUndo)}`)
+    // Handing the event back rather than swallowing it: a paste with no tab
+    // in it must still be the editor's own.
+    check('a paste with no tab in it still pastes',
+      tabbed.plain === '# plain', JSON.stringify(tabbed.plain))
+    check('and the script is as it was found',
+      tabbed.ended === tabbed.before,
+      `${JSON.stringify(tabbed.before)} -> ${JSON.stringify(tabbed.ended)}`)
   }
 
   console.log('\n[translate and proofread entry points]')

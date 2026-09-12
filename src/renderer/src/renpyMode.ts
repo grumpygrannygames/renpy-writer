@@ -173,11 +173,42 @@ const theme = EditorView.theme(
  * tabSize only says how wide a tab is drawn. Nothing here makes one, but a
  * file that arrived with one should not look narrower than it reads.
  */
-const indentation = [indentUnit.of('    '), EditorState.tabSize.of(4)]
+const INDENT = '    '
+
+const indentation = [indentUnit.of(INDENT), EditorState.tabSize.of(4)]
+
+/**
+ * A pasted tab becomes spaces on the way in.
+ *
+ * The Tab key cannot make one any more, but a paste still can, and a tab is
+ * not a style the file gets to have: Ren'Py refuses to load the script, at
+ * the point of running the game rather than here. Somebody pasting a scene
+ * from another editor would find out much later, and about a character they
+ * cannot see.
+ *
+ * Every tab, not only the ones at the start of a line. Indentation is the
+ * only place a tab means anything, but a tab further along the line is just
+ * as fatal -- and one inside a string, which Ren'Py does allow, is a tab
+ * nobody can see in dialogue and almost certainly did not want.
+ */
+const spacesOnPaste = EditorView.domEventHandlers({
+  paste(event, view) {
+    const pasted = event.clipboardData?.getData('text/plain')
+    if (!pasted || !pasted.includes('\t')) return false
+    event.preventDefault()
+    view.dispatch({
+      ...view.state.replaceSelection(pasted.replaceAll('\t', INDENT)),
+      scrollIntoView: true,
+      userEvent: 'input.paste'
+    })
+    return true
+  }
+})
 
 export const renpySetup = [
   renpyLanguage,
   syntaxHighlighting(highlight),
   theme,
-  indentation
+  indentation,
+  spacesOnPaste
 ]
