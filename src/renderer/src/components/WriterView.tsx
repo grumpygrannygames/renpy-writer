@@ -923,6 +923,14 @@ const Block = memo(function Block(props: BlockProps) {
             }
             onDone={onBlur}
             onAdvance={() => onFocusField(node.id, 'text')}
+            onBackspaceEmpty={
+              // Not when there are words on the line: an empty cue in front of
+              // a line of dialogue is a narrator line, and backspace there is
+              // somebody deleting a character name, not the line.
+              node.text.trim() === ''
+                ? () => props.onBackspaceEmpty(node.id)
+                : undefined
+            }
           />
         ) : (
           <span
@@ -1363,6 +1371,15 @@ interface SpeakerProps {
   onCommit: (speaker: string | null) => void
   onDone: () => void
   onAdvance: () => void
+  /**
+   * Backspace on an empty cue takes the whole line with it.
+   *
+   * Only passed when there is nothing else on the line. A blank narrator line
+   * -- no character, no words -- has no other way out of this view: there is
+   * nothing to select and nothing to delete, and the field it leaves behind
+   * reads as an editor that will not respond.
+   */
+  onBackspaceEmpty?: () => void
 }
 
 /**
@@ -1370,7 +1387,15 @@ interface SpeakerProps {
  * suggestion and stays put; Tab again (with nothing left to complete) moves on
  * to the dialogue, which is the screenplay-editor rhythm.
  */
-function SpeakerInput({ nodeId, initial, characters, onCommit, onDone, onAdvance }: SpeakerProps) {
+function SpeakerInput({
+  nodeId,
+  initial,
+  characters,
+  onCommit,
+  onDone,
+  onAdvance,
+  onBackspaceEmpty
+}: SpeakerProps) {
   const [query, setQuery] = useState(initial)
   const [active, setActive] = useState(0)
   const committed = useRef(false)
@@ -1421,6 +1446,15 @@ function SpeakerInput({ nodeId, initial, characters, onCommit, onDone, onAdvance
             commit(pick && !exact ? pick.varName : query)
             onDone()
             onAdvance()
+          } else if (e.key === 'Backspace' && e.currentTarget.value === '' && onBackspaceEmpty) {
+            e.preventDefault()
+            // Nothing to commit: the node this would write a speaker onto is
+            // about to stop existing. Blur first, the way the dialogue field
+            // does, so the editor closing cannot undo the focus that removing
+            // the line hands to the line above.
+            committed.current = true
+            e.currentTarget.blur()
+            onBackspaceEmpty()
           } else if (e.key === 'ArrowDown') {
             e.preventDefault()
             setActive((i) => Math.min(i + 1, Math.max(matches.length - 1, 0)))

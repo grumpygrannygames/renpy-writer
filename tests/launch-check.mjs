@@ -4777,6 +4777,109 @@ app.whenReady().then(async () => {
       JSON.stringify(outlineAfter.beats.map((b) => b.title).slice(-4)))
   }
 
+  console.log('\n[a line with nothing on it]')
+  {
+    /*
+     * Enter at the end of a line opens a new one with the cue waiting for a
+     * name. Walk away from it -- no character, no words -- and it stayed: a
+     * NARRATOR over a Dialogue, with nothing to select and nothing to delete.
+     * Backspace in the empty cue is the way out, the same key that already
+     * removes a line from the dialogue side.
+     */
+    const chapter = path.join(root, 'game', 'scripts', 'chapter_2.rpy')
+    const onDiskBefore = await fs.readFile(chapter, 'utf8')
+
+    const blank = await js(`(async () => {${UNTIL}
+      const key = (el, k) => el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+      const count = () => document.querySelectorAll('.blk-dialogue').length;
+      const cue = () => document.querySelector('.blk-character-input');
+
+      // Its tab if it has one, and the sidebar only as a fallback -- whether
+      // an episode's beats are showing this late in the suite depends on how
+      // many times something has clicked its row, which is what folds them.
+      const tab = Array.from(document.querySelectorAll('.tab'))
+        .find(t => (t.getAttribute('data-tab') || '').includes('chapter_2'));
+      if (tab) {
+        tab.click();
+        await wait(1000);
+      } else {
+        const row = Array.from(document.querySelectorAll('.episode-row'))
+          .find(e => e.textContent.includes('chapter_2'));
+        if (!row) return { stage: 'chapter_2 is nowhere to be opened from' };
+        row.click();
+        await wait(1200);
+        // Put the beats back: the sections after this one work through them.
+        const folded = row.querySelector('.ep-caret.collapsed');
+        if (folded) {
+          folded.click();
+          await wait(300);
+        }
+      }
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Writer')?.click();
+      await until(() => document.querySelector('.blk-dialogue'));
+      await wait(600);
+
+      const before = count();
+
+      // First, a narrator line that does have words. The same keystroke there
+      // is somebody clearing a character name, not asking for the line to go.
+      const spoken = Array.from(document.querySelectorAll('.blk-dialogue')).find(b =>
+        b.querySelector('.blk-character-name.narrator') &&
+        (b.querySelector('.blk-text .blk-view')?.textContent || '').trim().length > 4);
+      if (!spoken) return { stage: 'no narrator line with words', before };
+      const words = spoken.querySelector('.blk-text .blk-view').textContent;
+      spoken.querySelector('.blk-character-name').click();
+      await wait(600);
+      if (!cue()) return { stage: 'the cue did not open', before };
+      key(cue(), 'Backspace');
+      await wait(800);
+      const keptCount = count();
+      const keptWords = document.body.textContent.indexOf(words) !== -1;
+
+      // Then the blank one, made the way it gets made.
+      const text = document.querySelector('.blk-dialogue .blk-text .blk-view');
+      text.click();
+      await wait(600);
+      const area = document.querySelector('.blk-input');
+      if (!area) return { stage: 'no dialogue editor', before };
+      key(area, 'Enter');
+      await wait(900);
+      const afterEnter = count();
+      if (!cue()) return { stage: 'no cue waiting on the new line', before, afterEnter };
+
+      key(cue(), 'Backspace');
+      await wait(900);
+
+      return {
+        stage: 'ok', before, keptCount, keptWords, afterEnter,
+        afterBackspace: count(),
+        cueGone: !cue(),
+        somethingFocused: !!document.querySelector('.blk-input')
+      };
+    })()`)
+
+    check('a narrator line with words is left alone',
+      blank.stage === 'ok' && blank.keptCount === blank.before,
+      JSON.stringify(blank))
+    check('and keeps its words', blank.keptWords === true, JSON.stringify(blank))
+    check('Enter opens a blank line with the cue waiting',
+      blank.stage === 'ok' && blank.afterEnter === blank.before + 1,
+      `${blank.before} -> ${blank.afterEnter}`)
+    check('backspace on the empty cue takes the line with it',
+      blank.stage === 'ok' && blank.afterBackspace === blank.before,
+      `${blank.afterEnter} -> ${blank.afterBackspace}`)
+    check('and the cue goes with it', blank.cueGone === true, JSON.stringify(blank))
+    check('leaving the cursor on the line above',
+      blank.somethingFocused === true, JSON.stringify(blank))
+
+    // Nothing was written and then unwritten: the file is as it was.
+    await sleep(2000)
+    const onDiskAfter = await fs.readFile(chapter, 'utf8')
+    check('and the script is as it was found', onDiskAfter === onDiskBefore,
+      'the file changed')
+  }
+
   console.log('\n[a character who is not in the script yet]')
   {
     // Somebody typed into the reference panel has no Character() definition,
