@@ -2046,6 +2046,95 @@ app.whenReady().then(async () => {
       `${JSON.stringify(tabbed.before)} -> ${JSON.stringify(tabbed.ended)}`)
   }
 
+  console.log('\n[Enter after a line that opens a block]')
+  {
+    /*
+     * Ren'Py takes its structure from indentation, so Enter after `label x:`
+     * has to start the next line inside it. Keeping the indentation of the
+     * line you were on -- which is what an editor does when nothing tells it
+     * otherwise -- puts the first line of a scene level with its label, and
+     * that is not an empty scene, it is a script that will not load.
+     *
+     * Driven by keys alone. A synthetic click does not move the cursor in this
+     * window, and the editor only draws the lines on screen, so walking there
+     * with Home and the arrows is the way to be sure where the cursor is.
+     */
+    const entered = await js(`(async () => {${UNTIL}
+      const key = (el, k, mod) => el.dispatchEvent(new KeyboardEvent('keydown',
+        Object.assign({ key: k, bubbles: true }, mod || {})));
+
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Code')?.click();
+      const content = await until(() => document.querySelector('.cm-content'));
+      if (!content) return { stage: 'no code view' };
+      await wait(600);
+
+      const lines = () => Array.from(document.querySelectorAll('.cm-line')).map(l => l.textContent);
+      const indentOf = (l) => (l === undefined ? null : l.length - l.trimStart().length);
+      const toTop = async () => {
+        key(content, 'Home', { ctrlKey: true });
+        key(content, 'Home', { metaKey: true });
+        await wait(500);
+      };
+      const undo = async () => {
+        key(content, 'z', { ctrlKey: true });
+        await wait(600);
+      };
+
+      await toTop();
+      const before = lines().slice(0, 2);
+      // The file has to start with a scene for this to be the test it says.
+      if (!/:\s*$/.test(before[0] || '')) return { stage: 'the first line opens nothing', before };
+
+      // At the end of the label, and in.
+      key(content, 'End');
+      await wait(300);
+      key(content, 'Enter');
+      await wait(700);
+      const afterOpener = lines()[1];
+      await undo();
+      const restoredOpener = lines()[1];
+
+      // And on the line under it, which opens nothing: same level, not deeper.
+      await toTop();
+      key(content, 'ArrowDown');
+      await wait(300);
+      key(content, 'End');
+      await wait(300);
+      key(content, 'Enter');
+      await wait(700);
+      const afterPlain = lines()[2];
+      await undo();
+
+      return {
+        stage: 'ok', before, restoredOpener,
+        openerAt: indentOf(before[0]),
+        plainAt: indentOf(before[1]),
+        made: afterOpener,
+        madeIndent: indentOf(afterOpener),
+        plainMadeIndent: indentOf(afterPlain),
+        restored: lines().slice(0, 2)
+      };
+    })()`)
+
+    check('the line put in after a scene is inside it',
+      entered.stage === 'ok' && entered.madeIndent === entered.openerAt + 4,
+      JSON.stringify(entered))
+    check('and is nothing but the indent',
+      entered.stage === 'ok' && (entered.made ?? 'x').trim() === '',
+      JSON.stringify(entered.made))
+    check('while a line that opens nothing keeps its own level',
+      entered.stage === 'ok' && entered.plainMadeIndent === entered.plainAt,
+      JSON.stringify(entered))
+    check('and undo takes the line back out',
+      entered.stage === 'ok' && entered.restoredOpener === entered.before[1],
+      `${JSON.stringify(entered.before)} -> ${JSON.stringify(entered.restoredOpener)}`)
+    check('leaving the script as it was found',
+      entered.stage === 'ok' &&
+      JSON.stringify(entered.restored) === JSON.stringify(entered.before),
+      JSON.stringify(entered.restored))
+  }
+
   console.log('\n[translate and proofread entry points]')
   const entry = await js(`(async () => {
     const rightClick = (el) => el?.dispatchEvent(new MouseEvent('contextmenu', {

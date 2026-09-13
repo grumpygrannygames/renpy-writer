@@ -25,6 +25,7 @@ import { renameVariable } from '../src/core/renpy/renameVariable'
 import { __testing as restructureTesting } from '../src/core/renpy/restructure'
 import { renameLabelIn } from '../src/core/renpy/renameLabel'
 import { characterVarName, freeName, toVarName } from '../src/shared/renpy/names'
+import { opensBlock, stripComment } from '../src/shared/renpy/indent'
 import { resolveImageName, readPortrait } from '../src/core/renpy/images'
 import { imageNameAt } from '../src/renderer/src/imageHover'
 import { appendBeat, moveBeat, planRemoveBeat, removeBeat } from '../src/core/renpy/restructure'
@@ -944,6 +945,44 @@ async function main() {
     check('and one whose name already ends in a number carries on too',
       characterVarName('Mara 2', ['mara_2']) === 'mara_3',
       characterVarName('Mara 2', ['mara_2']))
+  }
+
+  console.log('\n[which lines open a block]')
+  {
+    // Ren'Py takes its structure from indentation, and a colon is what says
+    // the next line belongs inside this one.
+    check('a scene opens one', opensBlock('label ch2_yard:'))
+    check('so does a menu', opensBlock('    menu:'))
+    check('and a choice inside it', opensBlock('        "Push":'))
+    check('and a condition', opensBlock('    if flags.told_her:'))
+    check('and the other half of it', opensBlock('    else:'))
+    check('and a python block', opensBlock('init python:'))
+    // Not a closed list of keywords, which is the point: these are block
+    // openers too, and Ren'Py adds more between versions.
+    check('and a style, which no keyword list here would have had',
+      opensBlock('style say_dialogue:'))
+    check('and a layered image', opensBlock('layeredimage ava:'))
+
+    check('dialogue does not', !opensBlock('    ben "Fine."'))
+    check('nor does dialogue that mentions a colon',
+      !opensBlock('    ben "The sign said: keep out."'))
+    check('nor an action line', !opensBlock('    scene bg_kitchen'))
+
+    // The two that a plainer reading of the rule gets wrong.
+    check('a comment ending in a colon opens nothing', !opensBlock('# TODO:'))
+    check('and a statement with a comment after it still opens one',
+      opensBlock('label ch2_yard:  # the one with the shed'))
+
+    // Which turns on telling a comment from a hash inside a string.
+    check('a hash inside dialogue is not a comment',
+      stripComment('    ben "call #5:"') === '    ben "call #5:"')
+    check('and an escaped quote does not end the string early',
+      stripComment('    ben "she said \\"go\\" # not a comment"') ===
+        '    ben "she said \\"go\\" # not a comment"')
+    check('a real comment is taken off',
+      stripComment('label x:  # here') === 'label x:  ')
+    check('and a line that is only a comment comes back empty',
+      stripComment('   # all of it').trim() === '')
   }
 
   console.log('\n[renaming a scene, and everything that points at it]')

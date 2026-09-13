@@ -1,9 +1,11 @@
 import {
   HighlightStyle,
   StreamLanguage,
+  indentService,
   indentUnit,
   syntaxHighlighting
 } from '@codemirror/language'
+import { opensBlock } from '@shared/renpy/indent'
 import { EditorState } from '@codemirror/state'
 import { tags as t } from '@lezer/highlight'
 import { EditorView } from '@codemirror/view'
@@ -175,7 +177,43 @@ const theme = EditorView.theme(
  */
 const INDENT = '    '
 
-const indentation = [indentUnit.of(INDENT), EditorState.tabSize.of(4)]
+/**
+ * Enter after a line that opens a block starts the next one inside it.
+ *
+ * Without this the editor keeps the indentation of the line you were on, so
+ * Enter after `label start:` put the first line of the scene level with the
+ * label -- which is not a scene with nothing in it, it is a script that will
+ * not load. The same for `menu:`, `if flag:`, `else:` and a menu choice.
+ *
+ * Asked for a position rather than a line: with a break about to be made, the
+ * position is where it will happen, and what decides is the text in front of
+ * it. Nothing in front of it means this is an existing line being re-indented,
+ * and then the nearest line above with anything on it decides instead.
+ */
+const blockIndent = indentService.of((context, pos) => {
+  const doc = context.state.doc
+  const line = doc.lineAt(pos)
+  const before = line.text.slice(0, pos - line.from)
+
+  let decides = before.trim() ? line : null
+  let text = before
+  if (!decides) {
+    for (let n = line.number - 1; n >= 1; n--) {
+      const above = doc.line(n)
+      if (above.text.trim()) {
+        decides = above
+        text = above.text
+        break
+      }
+    }
+  }
+  if (!decides) return 0
+
+  const base = context.lineIndent(decides.from)
+  return opensBlock(text) ? base + context.unit : base
+})
+
+const indentation = [indentUnit.of(INDENT), EditorState.tabSize.of(4), blockIndent]
 
 /**
  * A pasted tab becomes spaces on the way in.
