@@ -248,7 +248,7 @@ export default function SyncPanel({ onClose }: { onClose: () => void }) {
                 <span>What changed?</span>
                 <input
                   value={message}
-                  placeholder="Chapter 9 part 2 renders and dialogue fixes"
+                  placeholder="commit message"
                   onChange={(e) => setMessage(e.target.value)}
                 />
               </label>

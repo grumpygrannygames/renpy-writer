@@ -237,6 +237,31 @@ export default function WriterView({
   )
 
   /** Insert a fresh dialogue block after `id` and start editing it. */
+  /**
+   * The indent for a line put in after the one at `idx`.
+   *
+   * A choice is a header rather than a statement: `"Push":` opens a block and
+   * what comes next belongs inside it. Handing the new line the choice's own
+   * indent puts it where Ren'Py is expecting the next menu item, and the
+   * script stops loading. Everything else carries on at the level it was on.
+   *
+   * A level in is whatever the choice already uses, when it has anything in
+   * it, so a file that indents by two is not handed a line indented by four.
+   */
+  const indentAfter = (nodes: ScriptNode[], idx: number): string => {
+    const anchor = nodes[idx]
+    if (anchor.kind !== 'choice') return anchor.indent || '    '
+    for (let i = idx + 1; i < nodes.length; i++) {
+      if (nodes[i].kind === 'blank') continue
+      // Only what is inside this choice. The next choice along is not, and
+      // neither is whatever follows the menu.
+      return nodes[i].indent.length > anchor.indent.length
+        ? nodes[i].indent
+        : anchor.indent + '    '
+    }
+    return anchor.indent + '    '
+  }
+
   const insertAfter = useCallback((id: string) => {
     const nodes0 = docRef.current.nodes
     const idx = nodes0.findIndex((n) => n.id === id)
@@ -245,7 +270,7 @@ export default function WriterView({
     const created: ScriptNode = {
       id: nextId(),
       kind: 'dialogue',
-      indent: anchor.indent || '    ',
+      indent: indentAfter(nodes0, idx),
       raw: null,
       eol: anchor.eol || '\n',
       speaker: null,

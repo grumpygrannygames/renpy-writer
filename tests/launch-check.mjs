@@ -4880,6 +4880,107 @@ app.whenReady().then(async () => {
       'the file changed')
   }
 
+  console.log('\n[a line put in after a choice]')
+  {
+    /*
+     * A choice is a header, not a statement: `"Push":` opens a block. A line
+     * given the choice's own indent lands where Ren'Py is expecting the next
+     * menu item, and the script stops loading -- so Enter there has to go one
+     * level in, not straight down.
+     *
+     * Which file holds the menu is not fixed: the beat it lives in is dragged
+     * to another episode earlier in this suite, and that episode need not even
+     * be open. So every episode is opened in turn until one shows a choice,
+     * and the line to measure is the one the block says it came from.
+     *
+     * The line is taken out again on the way through, by the backspace the
+     * section above this one is about, so the file is left as it was.
+     */
+    const put = await js(`(async () => {${UNTIL}
+      const LF = String.fromCharCode(10);
+      const key = (el, k) => el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+      const root = ${JSON.stringify(root)};
+      const indentOf = (l) => l.length - l.trimStart().length;
+
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Writer')?.click();
+      await wait(900);
+
+      const wasOn = document.querySelector('.tab.active')?.getAttribute('data-tab') ?? null;
+      const rows = Array.from(document.querySelectorAll('.episode-row'));
+
+      let file = null;
+      let block = null;
+      for (const row of rows) {
+        row.click();
+        await wait(1400);
+        block = document.querySelector('.blk-choice');
+        if (block) {
+          file = row.querySelector('.file')?.textContent ?? null;
+          break;
+        }
+      }
+      if (!block || !file) {
+        return {
+          stage: 'no choice in any episode',
+          episodes: rows.map(r => r.querySelector('.file')?.textContent),
+          blocks: document.querySelectorAll('.blk-dialogue').length
+        };
+      }
+
+      // 1-indexed, and the choice keeps its own line number: what goes in
+      // goes in after it.
+      const at = Number(block.dataset.line);
+      const around = (text) => text.split(LF).slice(at - 1, at + 2).map(indentOf);
+
+      const before = await window.api.readEpisode(root, file);
+
+      block.querySelector('.blk-view').click();
+      await wait(600);
+      const area = document.querySelector('.blk-input');
+      if (!area) return { stage: 'no editor on the choice', file, at };
+      key(area, 'Enter');
+      await wait(2600);
+      const withLine = await window.api.readEpisode(root, file);
+
+      // And out again, so the file is as it was found.
+      const cue = document.querySelector('.blk-character-input');
+      if (cue) {
+        key(cue, 'Backspace');
+        await wait(2600);
+      }
+      const after = await window.api.readEpisode(root, file);
+
+      // Leave the sidebar and the row as they were found: clicking an episode
+      // is also what folds its beats away, and the sections after this one
+      // work through beat rows.
+      Array.from(document.querySelectorAll('.ep-caret.collapsed')).forEach(c => c.click());
+      await wait(400);
+      if (wasOn) {
+        Array.from(document.querySelectorAll('.tab'))
+          .find(t => t.getAttribute('data-tab') === wasOn)?.click();
+        await wait(600);
+      }
+
+      return { stage: 'ok', file, at, hadCue: !!cue,
+        before: around(before), withLine: around(withLine),
+        putBack: after === before };
+    })()`)
+
+    check('a choice has a block of its own under it',
+      put.stage === 'ok' && put.before[1] > put.before[0],
+      JSON.stringify(put))
+    check('Enter after a choice puts the line inside it',
+      put.stage === 'ok' && put.withLine[1] > put.withLine[0],
+      JSON.stringify(put))
+    check('at the depth the choice already uses',
+      put.stage === 'ok' && put.withLine[1] === put.before[1],
+      JSON.stringify(put))
+    check('and the cue is waiting on it', put.hadCue === true, JSON.stringify(put))
+    check('taking it out leaves the file as it was', put.putBack === true,
+      JSON.stringify(put))
+  }
+
   console.log('\n[a character who is not in the script yet]')
   {
     // Somebody typed into the reference panel has no Character() definition,
