@@ -25,7 +25,7 @@ import { renameVariable } from '../src/core/renpy/renameVariable'
 import { __testing as restructureTesting } from '../src/core/renpy/restructure'
 import { renameLabelIn } from '../src/core/renpy/renameLabel'
 import { characterVarName, freeName, toVarName } from '../src/shared/renpy/names'
-import { opensBlock, stripComment } from '../src/shared/renpy/indent'
+import { endsBlock, opensBlock, stripComment } from '../src/shared/renpy/indent'
 import { resolveImageName, readPortrait } from '../src/core/renpy/images'
 import { imageNameAt } from '../src/renderer/src/imageHover'
 import { appendBeat, moveBeat, planRemoveBeat, removeBeat } from '../src/core/renpy/restructure'
@@ -983,6 +983,20 @@ async function main() {
       stripComment('label x:  # here') === 'label x:  ')
     check('and a line that is only a comment comes back empty',
       stripComment('   # all of it').trim() === '')
+
+    // And the line that ends one. A jump leaves and does not come back, so
+    // what follows it is the next scene, at the margin.
+    check('a jump ends the block', endsBlock('    jump ch2_dream'))
+    check('with a comment after it too', endsBlock('    jump ch2_dream  # onward'))
+    check('and jump expression counts', endsBlock('    jump expression target'))
+    // A call comes back to the line after itself, so nothing has ended.
+    check('a call does not', !endsBlock('    call ch2_dream'))
+    check('nor does dialogue about jumping', !endsBlock('    ben "jump over it"'))
+    // The word, not the letters: somebody's variable may start with them.
+    check('nor does a character whose name starts that way',
+      !endsBlock('    jumper "Over here."'))
+    check('and a scene that opens a block is not one that ends it',
+      !endsBlock('label ch2_dream:'))
   }
 
   console.log('\n[renaming a scene, and everything that points at it]')

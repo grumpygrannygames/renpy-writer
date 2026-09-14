@@ -44,3 +44,21 @@ export function stripComment(line: string): string {
 export function opensBlock(line: string): boolean {
   return stripComment(line).trimEnd().endsWith(':')
 }
+
+/**
+ * Is the block over after this line?
+ *
+ * `jump` leaves and does not come back, so the statements it was among are
+ * finished: what follows a jump is, in practice, the next `label` at the far
+ * left. `call` is not the same and is deliberately left out -- it returns to
+ * the line after itself, so the block carries on.
+ *
+ * A jump nested inside a menu or an `if` chain is the case this reads wrong:
+ * there the run that ended is the inner one, and the next line belongs a
+ * single level out rather than at the margin. Backspace is the cost of being
+ * wrong that way, and every jump in a linear episode is at the top of its
+ * scene, where the margin is exactly right.
+ */
+export function endsBlock(line: string): boolean {
+  return /^jump\b/.test(stripComment(line).trim())
+}

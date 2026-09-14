@@ -5,7 +5,7 @@ import {
   indentUnit,
   syntaxHighlighting
 } from '@codemirror/language'
-import { opensBlock } from '@shared/renpy/indent'
+import { endsBlock, opensBlock } from '@shared/renpy/indent'
 import { EditorState } from '@codemirror/state'
 import { tags as t } from '@lezer/highlight'
 import { EditorView } from '@codemirror/view'
@@ -185,6 +185,10 @@ const INDENT = '    '
  * label -- which is not a scene with nothing in it, it is a script that will
  * not load. The same for `menu:`, `if flag:`, `else:` and a menu choice.
  *
+ * A jump goes the other way. It leaves and does not come back, so the run of
+ * statements it was in is over and the next line starts at the margin, which
+ * is where the label after it belongs.
+ *
  * Asked for a position rather than a line: with a break about to be made, the
  * position is where it will happen, and what decides is the text in front of
  * it. Nothing in front of it means this is an existing line being re-indented,
@@ -209,6 +213,7 @@ const blockIndent = indentService.of((context, pos) => {
   }
   if (!decides) return 0
 
+  if (endsBlock(text)) return 0
   const base = context.lineIndent(decides.from)
   return opensBlock(text) ? base + context.unit : base
 })

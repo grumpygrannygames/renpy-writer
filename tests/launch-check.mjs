@@ -2063,6 +2063,14 @@ app.whenReady().then(async () => {
       const key = (el, k, mod) => el.dispatchEvent(new KeyboardEvent('keydown',
         Object.assign({ key: k, bubbles: true }, mod || {})));
 
+      // chapter_2 by name rather than whatever the section before left in
+      // front: the big generated chapter opens with a scene like any other,
+      // but there is not a single jump anywhere in it.
+      const tab = Array.from(document.querySelectorAll('.tab'))
+        .find(t => (t.getAttribute('data-tab') || '').includes('chapter_2'));
+      if (!tab) return { stage: 'chapter_2 is not open' };
+      tab.click();
+      await wait(1000);
       Array.from(document.querySelectorAll('.mode-switch button'))
         .find(b => b.textContent === 'Code')?.click();
       const content = await until(() => document.querySelector('.cm-content'));
@@ -2106,7 +2114,41 @@ app.whenReady().then(async () => {
       const afterPlain = lines()[2];
       await undo();
 
+      // And the other half of the rule: a jump leaves and does not come back,
+      // so what follows it starts at the margin, where the next label goes.
+      // Walked to with the arrows, watching the highlighted line, because a
+      // click does not move the cursor here and the editor draws only what is
+      // on screen.
+      await toTop();
+      const cursorLine = () => document.querySelector('.cm-activeLine')?.textContent ?? '';
+      let standing = false;
+      for (let i = 0; i < 400; i++) {
+        if (cursorLine().trim().indexOf('jump ') === 0) {
+          standing = true;
+          break;
+        }
+        key(content, 'ArrowDown');
+        await wait(5);
+      }
+      let jumpAt = null;
+      let afterJump = null;
+      if (standing) {
+        jumpAt = indentOf(cursorLine());
+        key(content, 'End');
+        await wait(300);
+        key(content, 'Enter');
+        await wait(700);
+        // Enter leaves the cursor on the line it made, so the highlighted
+        // line is the one to measure.
+        afterJump = indentOf(cursorLine());
+        await undo();
+      }
+      // Back to the top before reading the first lines again: the editor draws
+      // a window, and the walk left it hundreds of lines down.
+      await toTop();
+
       return {
+        standing, jumpAt, afterJump,
         stage: 'ok', before, restoredOpener,
         openerAt: indentOf(before[0]),
         plainAt: indentOf(before[1]),
@@ -2126,6 +2168,15 @@ app.whenReady().then(async () => {
     check('while a line that opens nothing keeps its own level',
       entered.stage === 'ok' && entered.plainMadeIndent === entered.plainAt,
       JSON.stringify(entered))
+
+    check('there is a jump in the file to stand on',
+      entered.stage === 'ok' && entered.standing === true && entered.jumpAt > 0,
+      JSON.stringify(entered))
+    // A jump is the end of the scene, so the next thing anybody writes is a
+    // label, and a label lives at the margin.
+    check('and the line after a jump starts at the margin',
+      entered.stage === 'ok' && entered.afterJump === 0,
+      `jump at ${entered.jumpAt}, next line at ${entered.afterJump}`)
     check('and undo takes the line back out',
       entered.stage === 'ok' && entered.restoredOpener === entered.before[1],
       `${JSON.stringify(entered.before)} -> ${JSON.stringify(entered.restoredOpener)}`)
@@ -5418,7 +5469,11 @@ app.whenReady().then(async () => {
      * that four tabs fit and nothing is crowded at all.
      */
     win.setSize(900, 900)
-    await sleep(900)
+    // Waited for rather than slept through. A resize reaches the page when it
+    // reaches it, and a run that measured before it landed read the old width
+    // and reported a row with room to spare -- a red check about nothing.
+    const narrowed = await settle(win.webContents, 'document.documentElement.clientWidth < 950')
+    await sleep(300)
 
     const cramped = await js(`(() => {
       const strip = document.querySelector('.tab-strip');
@@ -5441,6 +5496,8 @@ app.whenReady().then(async () => {
       };
     })()`)
 
+    check('the window narrowed before anything was measured', narrowed === true,
+      'the page still reports the old width')
     check('the row has more tabs than fit', cramped.stage === 'ok' && cramped.tabs >= 4,
       JSON.stringify(cramped))
     check('so the tabs are what overflows', cramped.overflowing === true,
