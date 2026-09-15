@@ -23,6 +23,7 @@ import { LocalWorkspaceProvider } from '@core/workspace/LocalWorkspaceProvider'
 import type { WorkspaceProvider } from '@core/workspace/WorkspaceProvider'
 import { checkRenpyRoot, listScriptFiles, toFileSlug } from '@core/renpy/detect'
 import { parseEpisode } from '@core/renpy/labels'
+import { linkThrough } from '@shared/renpy/link'
 import {
   appendBeat,
   moveBeat,
@@ -650,8 +651,22 @@ export function registerHandlers(register: Register, host: HostServices): void {
     // The label is written into the script, not just the outline. A beat that
     // exists only in the outline opens into a script with nothing of it
     // there, and no way to make one.
-    await provider.writeText(rel, appendBeat(await provider.readText(rel), label))
-    return loadProject(host, root)
+    const source = await provider.readText(rel)
+    const wasLast = parseEpisode(episode.fileName, source).labels.at(-1)?.label ?? null
+    let text = appendBeat(source, label)
+    let notice: string | null = null
+
+    // And into the story. Appended after the scene that was last, which kept
+    // falling through as if nothing followed it -- or, if it jumped on to the
+    // next episode, jumped straight past the new one.
+    if (sidecar.settings.linear && wasLast) {
+      const linked = linkThrough(text, wasLast, label)
+      text = linked.text
+      notice = linked.notice
+    }
+
+    await provider.writeText(rel, text)
+    return { opened: await loadProject(host, root), notice }
   })
 
   register(

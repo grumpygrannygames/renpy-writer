@@ -272,6 +272,16 @@ export interface MoveBeatRequest {
   toIndex: number
 }
 
+export interface CreateBeatOutcome {
+  opened: OpenedProject
+  /**
+   * Why the new scene is not joined into the story, when it is not: the scene
+   * before it ends in its own control flow, and where that goes is not ours to
+   * decide.
+   */
+  notice: string | null
+}
+
 export interface MoveBeatOutcome {
   opened: OpenedProject
   /** Jumps written to keep the story running the same way. */
@@ -372,13 +382,13 @@ export interface RenpyWriterApi {
     renders: RenderConfig | null
   ): Promise<OpenedProject>
   /**
-   * Add a beat to an episode's outline, with no label in the script yet.
+   * Add a scene to the end of an episode: a label in the script, holding a
+   * `pass` until there is something to write.
    *
-   * Planning runs ahead of writing: a beat can exist as a card long before
-   * anything is written for it, and nothing is added to the .rpy until
-   * somebody writes it.
+   * In a linear project the scene that was last now leads into it, and the new
+   * one takes over wherever that scene went next.
    */
-  createBeat(renpyRoot: string, episodeId: string, title: string): Promise<OpenedProject>
+  createBeat(renpyRoot: string, episodeId: string, title: string): Promise<CreateBeatOutcome>
   /** Change a beat's title or the note kept with it. */
   updateBeat(
     renpyRoot: string,

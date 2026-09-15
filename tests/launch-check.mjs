@@ -5700,6 +5700,176 @@ app.whenReady().then(async () => {
       (removable.repoints ?? []).length === 1, JSON.stringify(removable.repoints))
   }
 
+  console.log('\n[a scene added to a linear episode joins the story]')
+  {
+    /*
+     * Adding a scene put it at the end of the episode, falling through, and
+     * left the scene that used to be last falling through too -- as if nothing
+     * followed it. In a linear project the one before now jumps into the new
+     * one, and the new one takes over wherever that scene went next.
+     *
+     * Both ways a scene gets added: the plot board, and the writer's own menu.
+     * The writer's is the harder one, because the new scene arrives called
+     * NEW_BEAT and is renamed straight away, and the jump into it has to be
+     * renamed with it or it points at nothing.
+     *
+     * Linear is switched on through the settings dialog rather than the API, so
+     * the app itself knows -- the writer decides what adding does from the
+     * project it has open.
+     */
+    const chapterPath = path.join(root, 'game', 'scripts', 'chapter_2.rpy')
+
+    const setLinear = (on) => js(`(async () => {${UNTIL}
+      document.querySelector('button[title="Project settings"]')?.click();
+      const box = await until(() => Array.from(document.querySelectorAll('.modal label.check'))
+        .find(l => (l.textContent || '').includes('Linear story'))?.querySelector('input'));
+      if (!box) return { stage: 'no linear setting' };
+      if (box.checked !== ${on}) box.click();
+      await wait(200);
+      Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .find(b => b.textContent.trim() === 'Save')?.click();
+      await until(() => !document.querySelector('.modal'));
+      await until(() => document.querySelector('.episode-row'));
+      await wait(1500);
+      return { stage: 'ok' };
+    })()`)
+
+    /** Scenes in file order, with the statements under each. */
+    const scenes = (text) => {
+      const out = []
+      for (const row of text.split(/\r?\n/)) {
+        const m = row.match(/^label\s+([A-Za-z_]\w*)\s*:/)
+        if (m) out.push({ name: m[1], body: [] })
+        else if (out.length && row.trim() && !row.trim().startsWith('#')) {
+          out[out.length - 1].body.push(row.trim())
+        }
+      }
+      return out
+    }
+
+    const switched = await setLinear(true)
+    check('linear can be switched on from the settings', switched.stage === 'ok',
+      JSON.stringify(switched))
+
+    // The plot board, twice: the second scene goes in after one that is still
+    // only a placeholder, which is how a run of planned beats gets written.
+    const board = await js(`(async () => {${UNTIL}
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Plot')?.click();
+      await until(() => document.querySelector('.plot-col'));
+      await wait(600);
+      const column = () => Array.from(document.querySelectorAll('.plot-col'))
+        .find(c => c.querySelector('.plot-file')?.textContent === 'chapter_2.rpy');
+      const add = async (name) => {
+        const col = column();
+        if (!col) return 'no chapter_2 column';
+        col.querySelector('.plot-add-open')?.click();
+        await wait(300);
+        const input = column()?.querySelector('.plot-add input');
+        if (!input) return 'no field to name it';
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+          .call(input, name);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        await wait(150);
+        column()?.querySelector('.plot-add button.primary')?.click();
+        await until(() => !column()?.querySelector('.plot-add'));
+        await wait(1200);
+        return null;
+      };
+      const notice = () => document.querySelector('.app-error .ae-text')?.textContent ?? null;
+
+      const one = await add('first thing after');
+      if (one) return { stage: one };
+      const afterFirst = notice();
+      document.querySelector('.app-error .ae-dismiss')?.click();
+      await wait(200);
+
+      const two = await add('second thing after');
+      if (two) return { stage: two };
+      return { stage: 'ok', afterFirst, afterSecond: notice() };
+    })()`)
+    check('two scenes can be added from the plot board', board.stage === 'ok',
+      JSON.stringify(board))
+
+    const onBoard = scenes(await fs.readFile(chapterPath, 'utf8'))
+    const at = (name) => onBoard.findIndex((sc) => sc.name === name)
+    const first = onBoard[at('FIRST_THING_AFTER')]
+    const second = onBoard[at('SECOND_THING_AFTER')]
+    const before = onBoard[at('FIRST_THING_AFTER') - 1]
+
+    // The reported case exactly: the scene that was last is last no longer.
+    check('the scene that was last now jumps into the new one',
+      JSON.stringify(first?.body) === JSON.stringify(['jump SECOND_THING_AFTER']),
+      JSON.stringify(first))
+    check('with its placeholder swapped for the jump, not left above it',
+      !(first?.body ?? []).includes('pass'), JSON.stringify(first))
+    check('and the newest one is last, and falls through',
+      onBoard[onBoard.length - 1]?.name === 'SECOND_THING_AFTER' &&
+        JSON.stringify(second?.body) === JSON.stringify(['pass']),
+      JSON.stringify(onBoard.slice(-2)))
+    check('adding after a placeholder raised no notice', board.afterSecond === null,
+      String(board.afterSecond))
+    // Whatever chapter_2 ended with by this point in the run, the first scene
+    // was either joined up or the reason it was not is on the screen.
+    check('the first one was joined up, or it says why not',
+      (before?.body ?? []).at(-1) === 'jump FIRST_THING_AFTER' ||
+        (board.afterFirst ?? '').includes('FIRST_THING_AFTER'),
+      JSON.stringify({ before, notice: board.afterFirst }))
+
+    // And the writer, through the scene's own menu, naming it straight away.
+    const writer = await js(`(async () => {${UNTIL}
+      const key = (el, k) => el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+      const tab = Array.from(document.querySelectorAll('.tab'))
+        .find(t => (t.getAttribute('data-tab') || '').includes('chapter_2'));
+      if (!tab) return { stage: 'chapter_2 is not open' };
+      tab.click();
+      await wait(900);
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Writer')?.click();
+      await until(() => document.querySelector('.blk-label'));
+      await wait(700);
+
+      const labels = Array.from(document.querySelectorAll('.blk-label'));
+      const last = labels[labels.length - 1];
+      const previous = last?.querySelector('.blk-label-name')?.textContent ?? null;
+      last?.querySelector('.blk-label-more')?.click();
+      await wait(300);
+      const item = Array.from(document.querySelectorAll('.ctx-item'))
+        .find(b => (b.textContent || '').includes('New scene below'));
+      if (!item) return { stage: 'no New scene below', previous };
+      item.click();
+      const input = await until(() => document.querySelector('.blk-label-input'));
+      if (!input) return { stage: 'no name field on the new scene', previous };
+      input.value = 'tea after dark';
+      key(input, 'Enter');
+      await wait(2800);
+      return {
+        stage: 'ok', previous,
+        notice: document.querySelector('.app-error .ae-text')?.textContent ?? null
+      };
+    })()`)
+    check('a scene can be added and named from the writer', writer.stage === 'ok',
+      JSON.stringify(writer))
+
+    const written = await fs.readFile(chapterPath, 'utf8')
+    const inWriter = scenes(written)
+    const prior = inWriter.find((sc) => sc.name === 'SECOND_THING_AFTER')
+    check('the writer joins it up the same way',
+      JSON.stringify(prior?.body) === JSON.stringify(['jump TEA_AFTER_DARK']),
+      JSON.stringify(prior))
+    check('by the name it was given, not the one it arrived with',
+      !/jump\s+NEW_BEAT\b/.test(written), JSON.stringify(inWriter.slice(-3)))
+    check('and the named scene is the last one',
+      inWriter[inWriter.length - 1]?.name === 'TEA_AFTER_DARK',
+      JSON.stringify(inWriter.slice(-2)))
+    check('with no notice, since there was nothing to refuse', writer.notice === null,
+      String(writer.notice))
+
+    const restored = await setLinear(false)
+    check('and linear goes back off for whatever runs after', restored.stage === 'ok',
+      JSON.stringify(restored))
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`)
   win.destroy()
   await fs.rm(root, { recursive: true, force: true }).catch(() => {})

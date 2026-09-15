@@ -477,8 +477,14 @@ export const useStore = create<AppState>((set, get) => ({
     const opened = get().opened
     if (!opened) return
     try {
-      const after = await api.createBeat(opened.project.renpyRoot, episodeId, title)
+      const { opened: after, notice } = await api.createBeat(
+        opened.project.renpyRoot,
+        episodeId,
+        title
+      )
       set({ opened: after, parsed: after.parsedEpisodes })
+      // The scene was added either way; this is why nothing leads into it.
+      if (notice) set({ error: notice })
       const file = after.episodes.find((e) => e.id === episodeId)?.fileName
       if (file) await reloadTabs(opened.project.renpyRoot, [file], get, set)
     } catch (e) {

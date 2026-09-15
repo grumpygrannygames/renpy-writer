@@ -20,6 +20,8 @@ import { matchSpeakers } from '../speakerMatch'
 import { portraits as portraitCache } from '../previewCache'
 import { useStore } from '../state/store'
 import { freeName } from '@shared/renpy/names'
+import { linkThrough } from '@shared/renpy/link'
+import { renameLabelIn } from '@shared/renpy/renameLabel'
 import {
   parseDocument,
   serializeDocument,
@@ -126,6 +128,13 @@ export default function WriterView({
    * over `ch2_dream` would rename a label the rest of the script jumps to.
    */
   const freshLabels = useRef<Set<string>>(new Set())
+  /** Whether scenes run on into one another, which decides what adding one does. */
+  const linear = useStore((s) => s.opened?.project.settings.linear ?? false)
+  const reportError = useStore((s) => s.reportError)
+  const linearRef = useRef(linear)
+  linearRef.current = linear
+  const reportErrorRef = useRef(reportError)
+  reportErrorRef.current = reportError
   const [labelMenu, setLabelMenu] = useState<{ id: string; at: MenuPosition } | null>(null)
   const [finding, setFinding] = useState(false)
   const [query, setQuery] = useState('')
@@ -411,9 +420,43 @@ export default function WriterView({
     const nodes = [...nodes0]
     terminate(nodes, at - 1, eol)
     nodes.splice(at, 0, ...added)
-    freshLabels.current.add(label.id)
-    commit(nodes)
-    focusOn(label.id, 'text', true)
+
+    /*
+     * Into the story, not only the file. In a linear episode the scene before
+     * this one leads into it, and it takes over wherever that scene went next --
+     * which is what the plot board does when it adds one, and by the same rule.
+     *
+     * The rule works on text, so the document goes out and comes back. The
+     * model keeps every line as it was written, so nothing else changes, but
+     * every block gets a new id: the new scene is found again by its name, and
+     * so is any other scene made here that has not been named yet.
+     */
+    let result = nodes
+    let focusId = label.id
+    const previous = idx === -1 ? [...nodes0].reverse().find((n) => n.kind === 'label') : nodes0[idx]
+    if (linearRef.current && previous?.kind === 'label') {
+      const text = serializeDocument({ ...docRef.current, nodes })
+      const linked = linkThrough(text, previous.name, label.name)
+      if (linked.notice) reportErrorRef.current(linked.notice)
+      if (linked.text !== text) {
+        const reparsed = parseDocument(linked.text).nodes
+        const labelNamed = (name: string): string | undefined =>
+          reparsed.find((r) => r.kind === 'label' && r.name === name)?.id
+        const again = labelNamed(label.name)
+        if (again) {
+          const unnamed = [...freshLabels.current]
+            .map((id) => nodes0.find((x) => x.id === id))
+            .flatMap((x) => (x?.kind === 'label' ? [labelNamed(x.name)] : []))
+          freshLabels.current = new Set(unnamed.filter((id): id is string => !!id))
+          result = reparsed
+          focusId = again
+        }
+      }
+    }
+
+    freshLabels.current.add(focusId)
+    commit(result)
+    focusOn(focusId, 'text', true)
   }, [commit, focusOn, freeLabel])
 
   /**
@@ -433,8 +476,23 @@ export default function WriterView({
     if (/^[0-9]/.test(name)) name = `BEAT_${name}`
     name = freeLabel(name, id)
     if (name === node.name) return
-    replaceNode(id, (n) => touch(n as never, { name } as never))
-  }, [freeLabel, replaceNode])
+
+    // The jumps and calls in this file that reach the scene go with it. A new
+    // scene arrives with the one before it already jumping into NEW_BEAT, and
+    // naming it is the very next thing that happens -- leaving that jump
+    // behind would point it at a scene that no longer exists.
+    const old = node.name
+    commit(
+      docRef.current.nodes.map((n) => {
+        if (n.id === id) return touch(n as never, { name } as never)
+        if (n.kind === 'raw' && n.raw && n.raw.includes(old)) {
+          const moved = renameLabelIn(n.raw, old, name)
+          if (moved.lines > 0) return { ...n, raw: moved.text }
+        }
+        return n
+      })
+    )
+  }, [freeLabel, commit])
 
   /**
    * Turn a block into another kind of element, keeping its words.

@@ -24,6 +24,7 @@ import { defineCharacter } from '../src/core/renpy/define'
 import { renameVariable } from '../src/core/renpy/renameVariable'
 import { __testing as restructureTesting } from '../src/core/renpy/restructure'
 import { renameLabelIn } from '../src/core/renpy/renameLabel'
+import { linkThrough } from '../src/shared/renpy/link'
 import { characterVarName, freeName, toVarName } from '../src/shared/renpy/names'
 import { endsBlock, opensBlock, stripComment } from '../src/shared/renpy/indent'
 import { resolveImageName, readPortrait } from '../src/core/renpy/images'
@@ -541,6 +542,126 @@ async function main() {
       both.filter((l) => l.startsWith('they_find_the_letter')).length === 2,
       JSON.stringify(both))
     check('and no name is repeated', new Set(both).size === both.length, JSON.stringify(both))
+  }
+
+  console.log('\n[a scene added to a linear episode joins the story]')
+  {
+    const L = String.fromCharCode(10)
+    const text = (...parts: string[]): string => parts.join(L) + L
+    const endOf = (script: string, label: string) =>
+      parseEpisode('ch.rpy', script).labels.find((l) => l.label === label)
+
+    // What was reported: the new scene went in last and fell through, and the
+    // one that used to be last went on falling through as if nothing followed.
+    const ending = text(
+      'label ch2_arrival:',
+      '    ava "We made it."',
+      '',
+      'label ch2_kettle:',
+      '    ben "Tea?"'
+    )
+    const grown = appendBeat(ending, 'NEW_BEAT')
+    const linked = linkThrough(grown, 'ch2_kettle', 'NEW_BEAT')
+    check('the scene that was last now jumps on',
+      endOf(linked.text, 'ch2_kettle')?.endKind === 'jump' &&
+        endOf(linked.text, 'ch2_kettle')?.trailingJump === 'NEW_BEAT',
+      linked.text)
+    check('into the new one, which is now the one that falls through',
+      endOf(linked.text, 'NEW_BEAT')?.endKind === 'fallthrough', linked.text)
+    check('and it keeps its placeholder, having nothing written yet',
+      /label NEW_BEAT:\s*\n\s+pass/.test(linked.text), linked.text)
+    check('with no notice, because nothing was left undone', linked.notice === null)
+    check('and the words before it are where they were',
+      linked.text.includes('    ben "Tea?"' + L + '    jump NEW_BEAT'), linked.text)
+
+    // A planned scene holding only its placeholder swaps it for the jump,
+    // rather than saying `pass` and `jump` both.
+    const planned = linkThrough(
+      appendBeat(text('label ch2_walk:', '    pass'), 'NEW_BEAT'), 'ch2_walk', 'NEW_BEAT')
+    check('an empty scene has its pass replaced by the jump, not joined by it',
+      planned.text.includes('label ch2_walk:' + L + '    jump NEW_BEAT') &&
+        !/label ch2_walk:\s*\n\s+pass/.test(planned.text),
+      planned.text)
+
+    // Hillfield has scenes like this: a label and nothing under it at all.
+    const bare = linkThrough(appendBeat(text('label HALLOWEEN:'), 'NEW_BEAT'), 'HALLOWEEN', 'NEW_BEAT')
+    check('a label with nothing under it gets the jump under it',
+      bare.text.includes('label HALLOWEEN:' + L + '    jump NEW_BEAT'), bare.text)
+
+    // The last scene that leads into the next episode keeps doing so -- by way
+    // of the new scene, which takes the way out over.
+    const onward = text('label ch5_end:', '    ava "Tomorrow, then."', '    jump EPISODE_6_START')
+    const carried = linkThrough(appendBeat(onward, 'NEW_BEAT'), 'ch5_end', 'NEW_BEAT')
+    check('a scene that jumped to the next episode now jumps to the new one',
+      endOf(carried.text, 'ch5_end')?.trailingJump === 'NEW_BEAT', carried.text)
+    check('and the new one goes on to the next episode instead',
+      endOf(carried.text, 'NEW_BEAT')?.trailingJump === 'EPISODE_6_START', carried.text)
+    check('so nothing jumps to the next episode twice',
+      carried.text.split('jump EPISODE_6_START').length === 2, carried.text)
+
+    // Put in between two scenes, the same rule keeps the story in order
+    // rather than jumping straight over what was added.
+    const between = text(
+      'label A:',
+      '    ava "One."',
+      '    jump B',
+      '',
+      'label NEW_BEAT:',
+      '    pass',
+      '',
+      'label B:',
+      '    ava "Two."'
+    )
+    const threaded = linkThrough(between, 'A', 'NEW_BEAT')
+    check('between two scenes, the first leads into the new one',
+      endOf(threaded.text, 'A')?.trailingJump === 'NEW_BEAT', threaded.text)
+    check('and the new one leads on to where the first used to go',
+      endOf(threaded.text, 'NEW_BEAT')?.trailingJump === 'B', threaded.text)
+
+    // Written already, it keeps its words and has the jump put after them.
+    const written = text(
+      'label A:', '    jump B', '', 'label NEW_BEAT:', '    ava "Already here."', '', 'label B:', '    pass')
+    const kept = linkThrough(written, 'A', 'NEW_BEAT')
+    check('a new scene with words in it keeps them, with the jump after',
+      kept.text.includes('    ava "Already here."' + L + '    jump B'), kept.text)
+
+    // A scene that ends in its own menu, return or if is not rewired: where
+    // that story goes is the writer's to decide, and they are told so.
+    const menu = text(
+      'label ch2_argument:',
+      '    menu:',
+      '        "Let it go":',
+      '            jump ch2_walk',
+      '        "Push":',
+      '            return'
+    )
+    const handAuthored = appendBeat(menu, 'NEW_BEAT')
+    const refused = linkThrough(handAuthored, 'ch2_argument', 'NEW_BEAT')
+    check('a scene that ends in its own control flow is left exactly as written',
+      refused.text === handAuthored, refused.text)
+    check('and the notice names both scenes',
+      !!refused.notice && refused.notice.includes('ch2_argument') && refused.notice.includes('NEW_BEAT'),
+      String(refused.notice))
+
+    // Line endings are the file's own.
+    const CRLF = String.fromCharCode(13) + String.fromCharCode(10)
+    const windows = linkThrough(
+      ['label A:', '    ava "One."', '', 'label NEW_BEAT:', '    pass', ''].join(CRLF), 'A', 'NEW_BEAT')
+    check('a Windows file keeps its line endings',
+      windows.text.includes('    ava "One."' + CRLF + '    jump NEW_BEAT' + CRLF) &&
+        !windows.text.replace(new RegExp(CRLF, 'g'), '').includes(L),
+      JSON.stringify(windows.text))
+
+    // And a scene that ends the file without a final newline does not get the
+    // jump written onto the end of its last line.
+    // B lives in another file, so the new scene is the last thing in this one.
+    const noNewline = ['label A:', '    jump B', '', 'label NEW_BEAT:', '    ava "Last line"'].join(L)
+    const tail = linkThrough(noNewline, 'A', 'NEW_BEAT')
+    check('the jump goes on its own line',
+      tail.text.endsWith('    ava "Last line"' + L + '    jump B'), JSON.stringify(tail.text))
+
+    // Nothing to do when either scene is not there.
+    check('an unknown scene changes nothing', linkThrough(ending, 'nope', 'NEW_BEAT').text === ending)
   }
 
   console.log('\n[removing a scene from the script]')
