@@ -296,7 +296,7 @@ app.whenReady().then(async () => {
   check('React mounted', shell.mounted)
   check('project gate rendered', shell.gate)
   check('heading reads the app name', shell.heading === 'Ren’Py Writer', String(shell.heading))
-  check('api exposes all 39 methods', shell.apiMethods === 39, String(shell.apiMethods))
+  check('api exposes all 41 methods', shell.apiMethods === 41, String(shell.apiMethods))
 
   console.log('\n[a broken bridge says so]')
   {
@@ -5868,6 +5868,156 @@ app.whenReady().then(async () => {
     const restored = await setLinear(false)
     check('and linear goes back off for whatever runs after', restored.stage === 'ok',
       JSON.stringify(restored))
+  }
+
+  console.log('\n[deleting a character]')
+  {
+    /*
+     * The character view could rename a character and unlink a variable, but
+     * there was no way to get rid of one.
+     *
+     * The profile is notes and always goes. A definition is script, and only
+     * goes when nothing speaks as that character or names it in code -- the
+     * lines that do would stop the game. Two characters, one of each.
+     */
+    const charactersFile = path.join(root, 'game', 'characters.rpy')
+    const profilesFile = path.join(root, '.renpywriter', 'characters.json')
+
+    // Somebody with a definition and nothing else, made the way a writer makes one.
+    const created = await js(`(async () => {${UNTIL}
+      const setVal = (el, v) => {
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(el, v);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      if (!document.querySelector('.refpanel')) {
+        Array.from(document.querySelectorAll('button'))
+          .find(b => b.textContent === 'Reference')?.click();
+        await until(() => document.querySelector('.refpanel'));
+      }
+      Array.from(document.querySelectorAll('.ref-actions button'))
+        .find(b => b.textContent === 'Add character')?.click();
+      const field = await until(() => document.querySelector('.modal .field input'));
+      if (!field) return { stage: 'no add dialog' };
+      setVal(field, 'Temporary Tess');
+      await wait(200);
+      const offer = Array.from(document.querySelectorAll('.modal label.check'))
+        .find(l => l.textContent.indexOf('script') !== -1)?.querySelector('input');
+      if (offer && !offer.checked) offer.click();
+      Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .find(b => b.textContent.indexOf('Create') === 0)?.click();
+      await until(() => document.querySelector('.chareditor .ce-head h1')?.textContent === 'Temporary Tess');
+      await wait(600);
+      return { stage: 'ok', tabs: document.querySelectorAll('.tab').length };
+    })()`)
+    check('a character can be made to delete', created.stage === 'ok', JSON.stringify(created))
+    check('with a definition in the script to delete with them',
+      (await fs.readFile(charactersFile, 'utf8')).includes('define temporary_tess = Character('),
+      'no definition was written')
+
+    const asked = await js(`(async () => {${UNTIL}
+      document.querySelector('.chareditor .ce-delete')?.click();
+      const dialog = await until(() => document.querySelector('.delete-character-modal'));
+      if (!dialog) return { stage: 'no delete dialog' };
+      // Planning reads the script; wait for what it found.
+      await until(() => dialog.querySelector('.dc-var'));
+      await wait(300);
+      const box = dialog.querySelector('.dc-var label.check input');
+      return {
+        stage: 'ok',
+        title: dialog.querySelector('h2')?.textContent ?? null,
+        offered: !!box,
+        ticked: box?.checked ?? null,
+        shows: dialog.querySelector('.dc-lines code')?.textContent ?? null
+      };
+    })()`)
+    // The dialog as it is drawn. A check can pass on a dialog nobody could read.
+    await shoot(win.webContents, 'delete-character.png')
+
+    check('the character view offers to delete', asked.stage === 'ok', JSON.stringify(asked))
+    check('an unused definition is offered for removal, ticked',
+      asked.offered === true && asked.ticked === true, JSON.stringify(asked))
+    check('showing the exact line that will go',
+      (asked.shows ?? '').startsWith('define temporary_tess = Character('), String(asked.shows))
+
+    const gone = await js(`(async () => {${UNTIL}
+      document.querySelector('.delete-character-modal button.danger')?.click();
+      await until(() => !document.querySelector('.delete-character-modal'));
+      await until(() => !Array.from(document.querySelectorAll('.tab'))
+        .some(t => (t.textContent || '').includes('Temporary Tess')));
+      await wait(900);
+      return {
+        stage: 'ok',
+        tabStill: Array.from(document.querySelectorAll('.tab'))
+          .some(t => (t.textContent || '').includes('Temporary Tess')),
+        notice: document.querySelector('.app-error .ae-text')?.textContent ?? null
+      };
+    })()`)
+    const afterFile = await fs.readFile(charactersFile, 'utf8')
+    const profilesAfter = JSON.parse(await fs.readFile(profilesFile, 'utf8'))
+    check('deleting takes the definition out of the script',
+      !afterFile.includes('temporary_tess'), afterFile)
+    check('and the profile out of the notes',
+      !(profilesAfter.characters ?? []).some((c) => c.name === 'Temporary Tess'),
+      JSON.stringify((profilesAfter.characters ?? []).map((c) => c.name)))
+    check('and closes their tab', gone.tabStill === false, JSON.stringify(gone))
+    check('with nothing to report', gone.notice === null, String(gone.notice))
+
+    // Now somebody who still speaks: a profile over a variable with lines.
+    const speaker = await js(`(async () => {${UNTIL}
+      const root = ${JSON.stringify(root)};
+      const setVal = (el, v) => {
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(el, v);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      Array.from(document.querySelectorAll('.ref-actions button'))
+        .find(b => b.textContent === 'Add character')?.click();
+      const field = await until(() => document.querySelector('.modal .field input'));
+      if (!field) return { stage: 'no add dialog' };
+      // Whichever unclaimed variable actually speaks, by this point in the run.
+      const offered = Array.from(document.querySelectorAll('.modal .pick-list li'))
+        .map(li => li.querySelector('.pl-var')?.textContent).filter(Boolean);
+      const uses = await window.api.planDeleteCharacter(root, offered);
+      const talker = uses.find(u => u.speaks > 0 && u.defines.length > 0);
+      if (!talker) return { stage: 'no unclaimed variable that speaks', offered };
+      setVal(field, 'Kept Speaker');
+      Array.from(document.querySelectorAll('.modal .pick-list li'))
+        .find(li => li.querySelector('.pl-var')?.textContent === talker.varName)?.click();
+      await wait(200);
+      Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .find(b => b.textContent.indexOf('Create') === 0)?.click();
+      await until(() => document.querySelector('.chareditor .ce-head h1')?.textContent === 'Kept Speaker');
+      await wait(500);
+
+      document.querySelector('.chareditor .ce-delete')?.click();
+      const dialog = await until(() => document.querySelector('.delete-character-modal'));
+      if (!dialog) return { stage: 'no delete dialog' };
+      await until(() => dialog.querySelector('.dc-var'));
+      await wait(300);
+      const offeredRemoval = !!dialog.querySelector('.dc-var label.check input');
+      const says = dialog.querySelector('.dc-var')?.textContent ?? '';
+      dialog.querySelector('button.danger')?.click();
+      await until(() => !document.querySelector('.delete-character-modal'));
+      await wait(1200);
+      return { stage: 'ok', varName: talker.varName, speaks: talker.speaks, offeredRemoval, says,
+        notice: document.querySelector('.app-error .ae-text')?.textContent ?? null };
+    })()`)
+
+    check('a character who speaks can be deleted too', speaker.stage === 'ok',
+      JSON.stringify(speaker).slice(0, 240))
+    check('but their definition is not offered for removal', speaker.offeredRemoval === false,
+      JSON.stringify(speaker))
+    check('and the dialog says how many lines need it',
+      (speaker.says ?? '').includes(String(speaker.speaks)), String(speaker.says))
+    const everywhere = await js(`(async () => {
+      const uses = await window.api.planDeleteCharacter(${JSON.stringify(root)}, [${JSON.stringify(speaker.varName ?? '')}]);
+      return uses[0];
+    })()`)
+    check('so the definition is still in the script',
+      (everywhere?.defines ?? []).length > 0, JSON.stringify(everywhere))
+    const profilesAtEnd = JSON.parse(await fs.readFile(profilesFile, 'utf8'))
+    check('while the profile itself is gone',
+      !(profilesAtEnd.characters ?? []).some((c) => c.name === 'Kept Speaker'),
+      JSON.stringify((profilesAtEnd.characters ?? []).map((c) => c.name)))
   }
 
   console.log(`\n${pass} passed, ${fail} failed`)

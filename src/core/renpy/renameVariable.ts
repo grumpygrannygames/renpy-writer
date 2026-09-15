@@ -27,13 +27,13 @@ export interface VariableRenameResult {
  * variables -- `david carlos "..."` is David wearing Carlos's pose, not two
  * characters -- so a speech line is only ever rewritten at its first word.
  */
-const SPEECH = /^(\s*)([A-Za-z_]\w*)((?:\s+[A-Za-z_]\w*)*\s*")/
+export const SPEECH = /^(\s*)([A-Za-z_]\w*)((?:\s+[A-Za-z_]\w*)*\s*")/
 /** `define ava = ` or `default ava = `. */
-const BINDING = /^(\s*(?:define|default)\s+)([A-Za-z_]\w*)(\s*=)/
+export const BINDING = /^(\s*(?:define|default)\s+)([A-Za-z_]\w*)(\s*=)/
 /** A block of real Python, inside which every word is code. */
-const PYTHON_BLOCK = /^(?:init\s+(?:-?\d+\s+)?)?python\b[^:]*:\s*$/
+export const PYTHON_BLOCK = /^(?:init\s+(?:-?\d+\s+)?)?python\b[^:]*:\s*$/
 /** Statements whose contents are a Python expression. */
-const CONDITION = /^(?:if|elif|while)\b/
+export const CONDITION = /^(?:if|elif|while)\b/
 
 /**
  * Identifiers on a line of code, ignoring anything inside quotes.
@@ -41,7 +41,7 @@ const CONDITION = /^(?:if|elif|while)\b/
  * Only ever applied to lines that are Python, where a quote is a string
  * delimiter. Applying it to prose would go wrong at the first apostrophe.
  */
-function bareWords(line: string): string[] {
+export function bareWords(line: string): string[] {
   const words: string[] = []
   let quote: string | null = null
   let word = ''
@@ -70,7 +70,7 @@ function bareWords(line: string): string[] {
   return words
 }
 
-const indentOf = (line: string): number => line.length - line.trimStart().length
+export const indentOf = (line: string): number => line.length - line.trimStart().length
 
 /**
  * Rename a character's script variable everywhere it is used as one.

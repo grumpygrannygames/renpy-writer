@@ -25,6 +25,11 @@ import { renameVariable } from '../src/core/renpy/renameVariable'
 import { __testing as restructureTesting } from '../src/core/renpy/restructure'
 import { renameLabelIn } from '../src/core/renpy/renameLabel'
 import { linkThrough } from '../src/shared/renpy/link'
+import {
+  removeDefinition,
+  removeUnusedDefinitions,
+  usesOfVariable
+} from '../src/core/renpy/deleteCharacter'
 import { characterVarName, freeName, toVarName } from '../src/shared/renpy/names'
 import { endsBlock, opensBlock, stripComment } from '../src/shared/renpy/indent'
 import { resolveImageName, readPortrait } from '../src/core/renpy/images'
@@ -1502,6 +1507,117 @@ async function main() {
       characterVarName('Mara', ['mara']) === 'mara_2')
     check('and keeps counting',
       characterVarName('Mara', ['mara', 'mara_2', 'mara_3']) === 'mara_4')
+  }
+
+  console.log('\n[deleting a character]')
+  {
+    const L = String.fromCharCode(10)
+    const text = (...parts: string[]): string => parts.join(L) + L
+
+    // One line, and the gap it sat in closes up rather than doubling.
+    const oneLine = text(
+      'define ava = Character("Ava")',
+      '',
+      'define ben = Character("Ben", color="#88ccff")',
+      '',
+      'define cora = Character("Cora")'
+    )
+    const withoutBen = removeDefinition(oneLine, 3)
+    check('a one-line definition comes out',
+      withoutBen !== null && !withoutBen.includes('define ben'), String(withoutBen))
+    check('leaving the others where they were',
+      !!withoutBen && withoutBen.includes('define ava') && withoutBen.includes('define cora'),
+      String(withoutBen))
+    check('and one gap between them, not two',
+      withoutBen === text('define ava = Character("Ava")', '', 'define cora = Character("Cora")'),
+      JSON.stringify(withoutBen))
+
+    // Over several lines, to the bracket that closes it -- a bracket inside a
+    // string does not count, or this would stop too early.
+    const spread = text(
+      'define ava = Character("Ava",',
+      '    color="#ff8888",',
+      '    what_prefix="(",',
+      '    image="ava")',
+      'define ben = Character("Ben")'
+    )
+    const unspread = removeDefinition(spread, 1)
+    check('a definition over several lines comes out whole',
+      unspread === text('define ben = Character("Ben")'), JSON.stringify(unspread))
+
+    check('a line that is not a definition is refused', removeDefinition(spread, 2) === null)
+    check('and one that never closes is refused rather than cut to the end',
+      removeDefinition(text('define ava = Character("Ava",', '    color="#ff8888",'), 1) === null)
+
+    const CRLF = String.fromCharCode(13) + String.fromCharCode(10)
+    const windows = ['define ava = Character("Ava")', 'define ben = Character("Ben")', ''].join(CRLF)
+    check('a Windows file keeps its line endings',
+      removeDefinition(windows, 1) === ['define ben = Character("Ben")', ''].join(CRLF),
+      JSON.stringify(removeDefinition(windows, 1)))
+
+    // Against a project on disk.
+    const os = await import('node:os')
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rpw-delete-'))
+    const game = path.join(root, 'game')
+    await fs.mkdir(game, { recursive: true })
+    await fs.writeFile(path.join(game, 'characters.rpy'), text(
+      'define ava = Character("Ava")',
+      'define ava_thoughts = Character(kind=ava, what_italic=True)',
+      'define ben = Character("Ben")',
+      'define cora = Character("Cora")',
+      'define dev = Character("Dev",',
+      '    color="#aaffaa")'
+    ))
+    await fs.writeFile(path.join(game, 'script.rpy'), text(
+      'label start:',
+      '    ben "Hello."',
+      '    ben happy"No space before the quote."',
+      '    "Cora is mentioned in the story, which is not a use."',
+      '    show cora neutral',
+      '    if dev_mood > 2:',
+      '        pass',
+      '    return'
+    ))
+    const disk = new LocalWorkspaceProvider(root)
+
+    const ben = await usesOfVariable(root, 'ben')
+    check('lines a character speaks are counted, however they are spaced',
+      ben.speaks === 2 && ben.speakFiles === 1, JSON.stringify(ben))
+    const ava = await usesOfVariable(root, 'ava')
+    check('another character built from one is a use of it',
+      ava.speaks === 0 && ava.mentions.some((m) => m.includes('kind=ava')), JSON.stringify(ava))
+    check('and its own definition is where it is defined, not a use',
+      ava.defines.length === 1 && ava.defines[0].line === 1, JSON.stringify(ava.defines))
+    const cora = await usesOfVariable(root, 'cora')
+    check('a name in the story or an image tag is not a use',
+      cora.speaks === 0 && cora.mentions.length === 0, JSON.stringify(cora))
+    const dev = await usesOfVariable(root, 'dev')
+    check('nor is a longer name that starts the same way',
+      dev.mentions.length === 0, JSON.stringify(dev))
+
+    const keptBen = await removeUnusedDefinitions(root, disk, 'ben')
+    check('a character who still speaks keeps their definition',
+      !keptBen.ok && /2 lines/.test(keptBen.reason ?? ''), JSON.stringify(keptBen))
+    const keptAva = await removeUnusedDefinitions(root, disk, 'ava')
+    check('as does one that other code is built from',
+      !keptAva.ok && (keptAva.reason ?? '').includes('kind=ava'), JSON.stringify(keptAva))
+
+    const goneCora = await removeUnusedDefinitions(root, disk, 'cora')
+    const goneDev = await removeUnusedDefinitions(root, disk, 'dev')
+    const after = await fs.readFile(path.join(game, 'characters.rpy'), 'utf8')
+    check('an unused definition is taken out', goneCora.ok && !after.includes('define cora'), after)
+    check('including one over two lines', goneDev.ok && !after.includes('color="#aaffaa"'), after)
+    check('and everything still needed is left',
+      after === text(
+        'define ava = Character("Ava")',
+        'define ava_thoughts = Character(kind=ava, what_italic=True)',
+        'define ben = Character("Ben")'
+      ),
+      JSON.stringify(after))
+    check('the script itself is untouched',
+      (await fs.readFile(path.join(game, 'script.rpy'), 'utf8')).includes('show cora neutral'))
+
+    await fs.rm(root, { recursive: true, force: true })
   }
 
   console.log('\n[defining a character: the file RW writes to]')

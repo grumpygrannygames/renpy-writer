@@ -4,6 +4,7 @@ import { useCast } from '../useCast'
 import { readableOn } from '../color'
 import CharacterFields from './CharacterFields'
 import RenameVariableDialog from './RenameVariableDialog'
+import DeleteCharacterDialog from './DeleteCharacterDialog'
 
 /** Must match --bg in styles.css. */
 const EDITOR_BG = '#16161a'
@@ -22,6 +23,7 @@ export default function CharacterEditor({ characterKey }: { characterKey: string
   const [adding, setAdding] = useState('')
   const [renameError, setRenameError] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<{ varName: string; name: string } | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
   const profile = profiles.find((p) => p.note.id === characterKey)
 
@@ -57,6 +59,13 @@ export default function CharacterEditor({ characterKey }: { characterKey: string
               {profile.variables.length === 1 ? '' : 's'}
             </span>
           )}
+          <button
+            className="ghost ce-delete"
+            title="Delete this character, and take them out of the script if nothing there uses them"
+            onClick={() => setDeleting(true)}
+          >
+            Delete character
+          </button>
         </div>
 
         <CharacterFields
@@ -156,6 +165,15 @@ export default function CharacterEditor({ characterKey }: { characterKey: string
           </section>
         )}
       </div>
+
+      {deleting && (
+        <DeleteCharacterDialog
+          profileId={note.id}
+          name={note.name}
+          varNames={note.varNames}
+          onClose={() => setDeleting(false)}
+        />
+      )}
 
       {renaming && (
         <RenameVariableDialog

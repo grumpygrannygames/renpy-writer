@@ -4,6 +4,7 @@ import type {
   ProjectListing,
   CreateEpisodeInput,
   CreateProjectInput,
+  DeleteCharacterRequest,
   OpenedProject
 } from '@shared/api'
 import { IPC } from '@shared/api'
@@ -54,6 +55,7 @@ import { defineCharacter } from '@core/renpy/define'
 import { freeName } from '@shared/renpy/names'
 import { renameCharacter } from '@core/renpy/rename'
 import { renameVariable } from '@core/renpy/renameVariable'
+import { removeUnusedDefinitions, usesOfVariable } from '@core/renpy/deleteCharacter'
 import { renameLabelEverywhere } from '@core/renpy/renameLabel'
 import { forgetImageIndex, readPortrait, resolveImageName } from '@core/renpy/images'
 import {
@@ -425,6 +427,39 @@ export function registerHandlers(register: Register, host: HostServices): void {
       return { ok: true, characters: await scanCharacters(root) }
     }
   )
+
+  register(IPC.planDeleteCharacter, async (root: string, varNames: string[]) => {
+    const uses = []
+    for (const varName of varNames) uses.push(await usesOfVariable(root, varName))
+    return uses
+  })
+
+  /**
+   * Delete a character.
+   *
+   * The definitions go first, each checked again against the script as it is
+   * now; the profile goes either way, because that is what was asked for, and
+   * a definition that has to stay is reported rather than silently kept.
+   */
+  register(IPC.deleteCharacter, async (root: string, input: DeleteCharacterRequest) => {
+    const provider = ws(root)
+    const notices: string[] = []
+    for (const varName of input.removeDefinitionsOf) {
+      const done = await removeUnusedDefinitions(root, provider, varName)
+      if (!done.ok && done.reason) notices.push(done.reason)
+    }
+
+    if (input.profileId) {
+      const reference = await readReference(provider)
+      await writeReference(provider, {
+        ...reference,
+        characters: reference.characters.filter((c) => c.id !== input.profileId),
+        characterOrder: reference.characterOrder.filter((id) => id !== input.profileId)
+      })
+    }
+
+    return { notices, characters: await scanCharacters(root) }
+  })
 
   register(IPC.defineCharacter, async (root: string, name: string) => {
     const result = await defineCharacter(root, ws(root), name)

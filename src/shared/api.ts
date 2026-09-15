@@ -272,6 +272,25 @@ export interface MoveBeatRequest {
   toIndex: number
 }
 
+/** How the script uses one character variable, before deleting the character. */
+export interface VariableUse {
+  varName: string
+  /** Every `define` of it, which is what deleting would take out. */
+  defines: Array<{ file: string; line: number; text: string }>
+  /** Lines where it is the speaker, and in how many files. */
+  speaks: number
+  speakFiles: number
+  /** Code that names it, as "file:line  the line". */
+  mentions: string[]
+}
+
+export interface DeleteCharacterRequest {
+  /** The profile to delete, or null for a script character with none. */
+  profileId: string | null
+  /** Variables whose definitions should come out of the script too. */
+  removeDefinitionsOf: string[]
+}
+
 export interface CreateBeatOutcome {
   opened: OpenedProject
   /**
@@ -358,6 +377,19 @@ export interface RenpyWriterApi {
     created?: boolean
     characters: DiscoveredCharacter[]
   }>
+
+  /** Where the script uses each of these variables, and where they are defined. */
+  planDeleteCharacter(renpyRoot: string, varNames: string[]): Promise<VariableUse[]>
+
+  /**
+   * Delete a character: the profile, and the definitions asked for. A
+   * definition the script still uses is kept -- the lines that speak as it
+   * would stop working -- and the notices say which, and why.
+   */
+  deleteCharacter(
+    renpyRoot: string,
+    input: DeleteCharacterRequest
+  ): Promise<{ notices: string[]; characters: DiscoveredCharacter[] }>
 
   /** Forget what is in game/images, so the next preview reads the folder. */
   forgetImages(renpyRoot: string): Promise<void>
@@ -451,6 +483,8 @@ export const IPC = {
   renameCharacter: 'project:renameCharacter',
   defineCharacter: 'project:defineCharacter',
   renameVariable: 'project:renameVariable',
+  planDeleteCharacter: 'project:planDeleteCharacter',
+  deleteCharacter: 'project:deleteCharacter',
   readReference: 'reference:read',
   writeReference: 'reference:write',
   createEpisode: 'episodes:create',

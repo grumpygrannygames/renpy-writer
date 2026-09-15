@@ -1488,6 +1488,53 @@ label.check input {
   font-size: 12px;
   color: var(--text-faint);
 }
+/* Out of the way at the end of the heading, and only red once reached for. */
+.ce-delete {
+  margin-left: auto;
+  align-self: center;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.ce-delete:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.delete-character-modal {
+  max-width: 560px;
+}
+.delete-character-modal .dc-var {
+  margin: 14px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.delete-character-modal .dc-var-name {
+  font-family: var(--mono);
+  margin-bottom: 8px;
+}
+.delete-character-modal label.check {
+  margin-bottom: 6px;
+}
+.delete-character-modal .dc-lines {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: 11px;
+}
+.delete-character-modal .dc-lines code {
+  font-family: var(--mono);
+  word-break: break-all;
+}
+.delete-character-modal .dc-where {
+  color: var(--text-faint);
+  font-family: var(--mono);
+}
+.delete-character-modal button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
 
 /* Long fields hold pages of prose, so they get a readable measure and a
    generous minimum height in the full-size view. */

@@ -8,7 +8,8 @@ import type {
   HostCapabilities,
   RemoveBeatPlan,
   LineChange,
-  PassMode
+  PassMode,
+  VariableUse
 } from '@shared/api'
 import type {
   CharacterNote,
@@ -212,6 +213,13 @@ interface AppState {
 
   upsertCharacterNote: (note: CharacterNote) => void
   renameScriptCharacter: (varName: string, newName: string) => Promise<string | null>
+  /** How the script uses these character variables, before one is deleted. */
+  planDeleteCharacter: (varNames: string[]) => Promise<VariableUse[]>
+  /**
+   * Delete a character's profile, and the script definitions asked for. Any
+   * definition that has to stay is reported through `error`.
+   */
+  deleteCharacter: (profileId: string | null, removeDefinitionsOf: string[]) => Promise<void>
   /** Write a Character() definition for somebody the script does not have. */
   defineScriptCharacter: (name: string) => Promise<{ varName?: string; error?: string }>
   /** Rename a character in the script: the variable, the display name, or both. */
@@ -732,6 +740,38 @@ export const useStore = create<AppState>((set, get) => ({
     const reference = await api.readReference(root)
     set({ reference, referenceFor: root })
     return {}
+  },
+
+  planDeleteCharacter: async (varNames) => {
+    const opened = get().opened
+    if (!opened) return []
+    return api.planDeleteCharacter(opened.project.renpyRoot, varNames)
+  },
+
+  deleteCharacter: async (profileId, removeDefinitionsOf) => {
+    const opened = get().opened
+    if (!opened) return
+    const root = opened.project.renpyRoot
+    // Anything still on a timer goes to disk first. The delete reads the
+    // script to decide which definitions are safe to take, and writes the
+    // profiles file itself -- a pending save of either would undo it.
+    await get().flushPendingSaves()
+    try {
+      const result = await api.deleteCharacter(root, { profileId, removeDefinitionsOf })
+      set({ characters: result.characters })
+      const reference = await api.readReference(root)
+      set({ reference, referenceFor: root })
+      // A tab for somebody who is gone is a tab that says so and nothing else.
+      if (profileId) {
+        const key = `character:${profileId}`
+        if (get().tabs.some((t) => t.key === key)) get().closeTab(key)
+      }
+      // A definition may have come out of a script that is open.
+      await reloadTabs(root, get().tabs.filter(isEpisodeTab).map((t) => t.fileName), get, set)
+      if (result.notices.length > 0) set({ error: result.notices.join(' ') })
+    } catch (e) {
+      set({ error: message(e) })
+    }
   },
 
   defineScriptCharacter: async (name) => {

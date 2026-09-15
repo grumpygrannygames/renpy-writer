@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   CreateEpisodeInput,
   CreateProjectInput,
+  DeleteCharacterRequest,
   MoveBeatRequest,
   CommitRequest,
   Decision,
@@ -28,6 +29,10 @@ const api: RenpyWriterApi = {
     ipcRenderer.invoke(IPC.defineCharacter, root, name),
   renameVariable: (root: string, varName: string, changes: { varName?: string; name?: string }) =>
     ipcRenderer.invoke(IPC.renameVariable, root, varName, changes),
+  planDeleteCharacter: (root: string, varNames: string[]) =>
+    ipcRenderer.invoke(IPC.planDeleteCharacter, root, varNames),
+  deleteCharacter: (root: string, input: DeleteCharacterRequest) =>
+    ipcRenderer.invoke(IPC.deleteCharacter, root, input),
   resolveImage: (root: string, name: string) => ipcRenderer.invoke(IPC.resolveImage, root, name),
   forgetImages: (root: string) => ipcRenderer.invoke(IPC.forgetImages, root),
   readReference: (root: string) => ipcRenderer.invoke(IPC.readReference, root),
