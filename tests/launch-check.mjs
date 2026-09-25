@@ -3275,6 +3275,42 @@ app.whenReady().then(async () => {
     check('the save button says how much it will save',
       /^Save and send \d+ file/.test(opened.primary ?? ''), String(opened.primary))
 
+    /*
+     * Grey with nothing said about it is how somebody ends up believing the
+     * app cannot push. Everything else here is ready -- the files tick
+     * themselves, the repo is clean -- so the only thing holding it is the
+     * message, and the panel has to say so.
+     */
+    const grey = await js(`(async () => {${UNTIL}
+      const save = () => Array.from(document.querySelectorAll('.sync-modal .actions-row button'))
+        .find(b => (b.textContent || '').startsWith('Save and send'));
+      const why = () => document.querySelector('.sync-blocked')?.textContent ?? null;
+      const blank = { disabled: save()?.disabled ?? null, why: why() };
+
+      const input = document.querySelector('.sync-modal .field input');
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        .call(input, 'A line about what changed');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await wait(300);
+      const typed = { disabled: save()?.disabled ?? null, why: why() };
+
+      // And back to empty, so the section after this types its own.
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        .call(input, '');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await wait(300);
+      return { stage: 'ok', blank, typed };
+    })()`)
+    await shoot(win.webContents, 'sync-blocked.png')
+
+    check('with no message the save button is grey', grey.blank?.disabled === true,
+      JSON.stringify(grey))
+    check('and the panel says that is what it is waiting for',
+      (grey.blank?.why ?? '').includes('Say what changed'), String(grey.blank?.why))
+    check('typing one lights the button up', grey.typed?.disabled === false,
+      JSON.stringify(grey.typed))
+    check('and takes the note away with it', grey.typed?.why === null, String(grey.typed?.why))
+
     // Save everything, which should reach the remote.
     const saved = await js(`(async () => {
       const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));

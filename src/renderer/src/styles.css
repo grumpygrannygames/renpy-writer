@@ -828,6 +828,14 @@ label.check input {
   font-size: 11px;
 }
 
+/* Why the save button is grey, beside the button rather than anywhere else. */
+.sync-blocked {
+  flex: 1;
+  color: var(--text-faint);
+  font-size: 12px;
+  text-align: right;
+}
+
 /* ---------------------------------------------------------------- refusals */
 
 /*

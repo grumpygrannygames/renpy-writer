@@ -135,6 +135,20 @@ export default function SyncPanel({ onClose }: { onClose: () => void }) {
   const nothingTracked = status?.isRepo === false
   const conflicted = (status?.conflicted.length ?? 0) > 0
   const canSave = selected.size > 0 && message.trim().length > 0 && !busy && !conflicted
+  /**
+   * Why the button is grey, in the words of the thing that is missing.
+   *
+   * A disabled button explains nothing: the commonest reason here is an empty
+   * message, and the placeholder used to be a whole plausible sentence, so the
+   * field looked filled in and the button looked broken.
+   */
+  const blocked = (): string | null => {
+    if (busy || canSave) return null
+    if (conflicted) return 'Sort out the files above that came back changed on both sides first.'
+    if (selected.size === 0) return 'Tick at least one file to save.'
+    if (message.trim().length === 0) return 'Say what changed, in the box above, and this lights up.'
+    return null
+  }
 
   return (
     <div className="modal-backdrop" onClick={() => !busy && onClose()}>
@@ -287,6 +301,7 @@ export default function SyncPanel({ onClose }: { onClose: () => void }) {
               {busy === 'push' ? 'Sending…' : `Send ${status?.ahead} waiting`}
             </button>
           )}
+          {blocked() && <span className="sync-blocked">{blocked()}</span>}
           <button
             className="primary"
             disabled={!canSave}
