@@ -88,8 +88,10 @@ export default function ScriptPassPanel({ mode, fileName, beat, onClose }: Props
               {proofing ? (
                 <>
                   Only dialogue and menu choices are read. Spelling, grammar and punctuation are
-                  corrected; lines still in {sourceLanguage} are left for the translation pass, and
-                  each character&rsquo;s accent goes along so their voice is not tidied away.
+                  corrected, and lines that read stiffly, pad, or repeat a word from a line or two
+                  ago are edited to sound spoken. Lines still in {sourceLanguage} are left for the
+                  translation pass, and each character&rsquo;s accent goes along so their voice is
+                  not tidied away. Every change says what it was for.
                 </>
               ) : (
                 <>
@@ -160,6 +162,7 @@ export default function ScriptPassPanel({ mode, fileName, beat, onClose }: Props
                   </div>
                   <div className="tc-before">{c.before}</div>
                   <div className="tc-after">{c.after}</div>
+                  {c.why && <div className="tc-why">{c.why}</div>}
                 </li>
               ))}
               {pass.changes.length === 0 && (

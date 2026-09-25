@@ -73,6 +73,8 @@ export interface LineChange {
   speaker: string | null
   before: string
   after: string
+  /** A few words on what was wrong, when the pass said. */
+  why?: string
 }
 
 export interface ScriptPassOutcome {

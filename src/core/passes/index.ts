@@ -37,6 +37,8 @@ export interface LineChange {
   speaker: string | null
   before: string
   after: string
+  /** A few words on what was wrong, when the pass said. */
+  why?: string
 }
 
 export interface PassResult {
@@ -106,6 +108,7 @@ export async function runPass(
 
   const batchSize = options.batchSize ?? 60
   const rewritten = new Map<number, string>()
+  const reasons = new Map<number, string>()
 
   for (let start = 0; start < units.length; start += batchSize) {
     const batch = units.slice(start, start + batchSize)
@@ -120,6 +123,7 @@ export async function runPass(
     const parsed = parseResponse(result.output)
     if (parsed.error) return { content: source, changes: [], skipped, error: parsed.error }
     for (const [id, text] of parsed.byId) rewritten.set(id, text)
+    for (const [id, why] of parsed.whyById) reasons.set(id, why)
   }
 
   const changes: LineChange[] = []
@@ -140,7 +144,8 @@ export async function runPass(
       line: index + 1,
       speaker: node.kind === 'dialogue' ? node.speaker : null,
       before,
-      after: next
+      after: next,
+      why: reasons.get(id)
     })
   }
 

@@ -2356,10 +2356,10 @@ app.whenReady().then(async () => {
       "let input = ''",
       "process.stdin.on('data', (d) => (input += d))",
       "process.stdin.on('end', () => {",
-      "  const proofing = input.includes('Proofread visual novel dialogue')",
+      "  const proofing = input.includes('Proofread and edit visual novel dialogue')",
       "  const ids = [...input.matchAll(/\"id\":(\\d+)/g)].map((m) => Number(m[1]))",
       "  const tag = proofing ? 'PROOFED' : 'TRANSLATED'",
-      "  const items = ids.map((id) => ({ id, text: tag + ' ' + id }))",
+      "  const items = ids.map((id) => ({ id, text: tag + ' ' + id, why: proofing ? 'stiff' : undefined }))",
       "  process.stdout.write(JSON.stringify(proofing ? { revisions: items } : { translations: items }))",
       "})"
     ].join('\n'),
@@ -2398,12 +2398,14 @@ app.whenReady().then(async () => {
         error: proofread.error ?? null,
         sample: proofread.changes[0] ?? null,
         allTagged: proofread.changes.every(c => c.after.startsWith('PROOFED ')),
+        reasoned: proofread.changes.every(c => c.why === 'stiff'),
         lines: proofread.changes.map(c => c.line)
       },
       translated: {
         changes: translated.changes.length,
         skipped: translated.skipped,
         error: translated.error ?? null,
+        reasoned: translated.changes.some(c => c.why),
         allTagged: translated.changes.every(c => c.after.startsWith('TRANSLATED ')),
         lines: translated.changes.map(c => c.line)
       },
@@ -2421,6 +2423,10 @@ app.whenReady().then(async () => {
   check('the proofreader was asked, not the translator', ran.proofread.allTagged === true,
     JSON.stringify(ran.proofread.sample))
   check('the corrections reached the file on disk', ran.wroteToDisk === true)
+  // Every edit answers for itself, which is what makes forty of them reviewable.
+  check('each correction says what it was for', ran.proofread.reasoned === true,
+    JSON.stringify(ran.proofread.sample))
+  check('while a translation has nothing to explain', ran.translated.reasoned === false)
   check('putting it back restores the file byte for byte', ran.restoredExactly === true)
 
   check('a translation pass runs the same way', ran.translated.error === null,

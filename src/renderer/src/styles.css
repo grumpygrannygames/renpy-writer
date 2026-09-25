@@ -2025,6 +2025,13 @@ label.check input {
   text-decoration: line-through;
   margin-bottom: 2px;
 }
+/* What the edit was for, under the pair it explains. */
+.tc-why {
+  margin-top: 3px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-style: italic;
+}
 .tc-after {
   font-size: 13px;
   color: var(--text);

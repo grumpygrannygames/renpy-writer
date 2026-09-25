@@ -3422,7 +3422,31 @@ async function main() {
     check('it says accents must survive', prompt.includes('must survive the pass'))
     check('it leaves other languages alone',
       prompt.includes('If a line is not in English, return it unchanged.'))
-    check('it asks for revisions', prompt.includes('{"revisions":[{"id":1,"text":"..."}]}'))
+    check('it asks for revisions', prompt.includes('{"revisions":[{"id":1,"text":"...","why":"..."}]}'))
+
+    // The editing half. A pass that only fixes commas reports almost nothing
+    // on a script whose fault is that nobody in it sounds like a person.
+    check('it asks for stiff lines to be loosened',
+      prompt.includes('Make stiff lines sound spoken'), prompt.slice(0, 900))
+    check('and for padding to be cut', prompt.includes('Cut padding'))
+    check('and for a word repeated a line or two later to be varied',
+      prompt.includes('coming back within a few lines'))
+    check('while leaving repetition that is doing work',
+      prompt.includes('a verbal tic, a callback, a stammer, deliberate emphasis'))
+    check('it says the lines are consecutive, which is what makes that judgeable',
+      prompt.includes('consecutive and in the order they are read'))
+    check('it holds the line length, because a dialogue box has a size',
+      prompt.includes('about as long as it was'))
+    check('and still sets the bar at a change the writer would agree with',
+      prompt.includes('the writer would plainly agree with'))
+    check('it asks what each change was for', prompt.includes('Put a short "why"'))
+
+    const explained = parseResponse(
+      '{"revisions":[{"id":2,"text":"Leave.","why":"missing full stop"}]}')
+    check('a reason comes back with the line',
+      explained.whyById.get(2) === 'missing full stop', JSON.stringify([...explained.whyById]))
+    check('and a line with no reason is still a line',
+      parseResponse('{"revisions":[{"id":1,"text":"x"}]}').byId.get(1) === 'x')
     check('a choice is marked as one', prompt.includes('"speaker":"CHOICE"'))
     check('it never asks for a translation', !prompt.toLowerCase().includes('translat'))
 
@@ -3494,6 +3518,24 @@ async function main() {
       JSON.stringify(result.changes.map((c) => c.line)))
     check('the corrected line number is right',
       result.changes[0].line === 5, JSON.stringify(result.changes[0]))
+
+    // A change carries the reason through to the panel, which is what lets
+    // somebody scan forty of them and pick out the ones they disagree with.
+    const explaining = async (prompt: string) => {
+      const ids = [...prompt.matchAll(/"id":(\d+)/g)].map((m) => Number(m[1]))
+      return {
+        ok: true,
+        output: JSON.stringify({
+          revisions: ids.map((id) => ({ id, text: 'Tightened ' + id + '.', why: 'stiff' }))
+        })
+      }
+    }
+    const withReasons = await runPass(script,
+      { mode: 'proofread' as const, sourceLanguage: 'cs', targetLanguage: 'en', cast, profiles },
+      explaining)
+    check('a change says what it was for',
+      withReasons.changes.length > 0 && withReasons.changes.every((c) => c.why === 'stiff'),
+      JSON.stringify(withReasons.changes.map((c) => c.why)))
 
     // The two passes are mirror images over the same file.
     const translated = await runPass(script,
