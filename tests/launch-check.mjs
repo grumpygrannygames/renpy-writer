@@ -82,10 +82,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms * PACE))
  */
 const shoot = async (contents, name) => {
   const file = path.join(os.tmpdir(), 'rpw-shots', name)
+  await fs.mkdir(path.dirname(file), { recursive: true })
   try {
     const image = await contents.capturePage()
-    await fs.mkdir(path.dirname(file), { recursive: true })
     await fs.writeFile(file, image.toPNG())
+    console.log('  screenshot: ' + file)
+    return
+  } catch (e) {
+    // capturePage goes through the compositor, which a window parked off the
+    // desktop does not reliably have: it comes back UnknownVizError, and the
+    // picture that was the point of taking it is simply missing. The devtools
+    // protocol renders the page itself and does not care where the window is.
+    console.log('  (capturePage: ' + (e?.message ?? String(e)) + ', trying devtools)')
+  }
+  try {
+    if (!contents.debugger.isAttached()) contents.debugger.attach('1.3')
+    const shot = await contents.debugger.sendCommand('Page.captureScreenshot', { format: 'png' })
+    await fs.writeFile(file, Buffer.from(shot.data, 'base64'))
     console.log('  screenshot: ' + file)
   } catch (e) {
     console.log('  (no screenshot of ' + name + ': ' + (e?.message ?? String(e)) + ')')
@@ -242,7 +255,12 @@ app.whenReady().then(async () => {
     try {
       return await win.webContents.executeJavaScript(code)
     } catch (e) {
-      problems.push('executeJavaScript threw: ' + (e?.message ?? String(e)))
+      // Said here as well as collected. A swallowed page error comes back as
+      // {} and turns up much later as a reader of undefined, three sections
+      // from the thing that actually broke.
+      const why = e?.message ?? String(e)
+      console.log('  (page threw: ' + why + ')')
+      problems.push('executeJavaScript threw: ' + why)
       return {}
     }
   }
@@ -296,7 +314,7 @@ app.whenReady().then(async () => {
   check('React mounted', shell.mounted)
   check('project gate rendered', shell.gate)
   check('heading reads the app name', shell.heading === 'Ren’Py Writer', String(shell.heading))
-  check('api exposes all 41 methods', shell.apiMethods === 41, String(shell.apiMethods))
+  check('api exposes all 42 methods', shell.apiMethods === 42, String(shell.apiMethods))
 
   console.log('\n[a broken bridge says so]')
   {
@@ -2368,6 +2386,7 @@ app.whenReady().then(async () => {
   await fs.writeFile(stubCmd, '@echo off\r\nnode "' + stubJs + '"\r\n', 'utf8')
 
   const ran = await js(`(async () => {
+   try {
     const root = ${JSON.stringify(root)};
     const before = await window.api.readEpisode(root, 'chapter_2.rpy');
 
@@ -2378,7 +2397,20 @@ app.whenReady().then(async () => {
     const proofread = await window.api.runScriptPass(root, {
       fileName: 'chapter_2.rpy', mode: 'proofread'
     });
+    const afterRun = await window.api.readEpisode(root, 'chapter_2.rpy');
+
+    // Every other change, which is what rejecting half of them comes to.
+    const approved = proofread.changes.filter((_, i) => i % 2 === 0);
+    const rejected = proofread.changes.filter((_, i) => i % 2 === 1);
+    const applied = await window.api.applyPassChanges(root, {
+      fileName: 'chapter_2.rpy', changes: approved
+    });
     const afterProof = await window.api.readEpisode(root, 'chapter_2.rpy');
+    // Escaped twice over: this is inside a template literal, so a single
+    // backslash-n would be a real newline, and a regex cannot hold one.
+    const rows = afterProof.split(/\\r?\\n/);
+    const approvedLanded = approved.every(c => (rows[c.line - 1] || '').includes('PROOFED '));
+    const rejectedLeft = rejected.every(c => !(rows[c.line - 1] || '').includes('PROOFED '));
 
     // Put it back, exactly as the panel's revert does.
     await window.api.writeEpisode(root, 'chapter_2.rpy', proofread.previous);
@@ -2386,6 +2418,9 @@ app.whenReady().then(async () => {
 
     const translated = await window.api.runScriptPass(root, {
       fileName: 'chapter_2.rpy', mode: 'translate'
+    });
+    await window.api.applyPassChanges(root, {
+      fileName: 'chapter_2.rpy', changes: translated.changes
     });
     await window.api.writeEpisode(root, 'chapter_2.rpy', translated.previous);
     const restoredAgain = await window.api.readEpisode(root, 'chapter_2.rpy');
@@ -2409,11 +2444,22 @@ app.whenReady().then(async () => {
         allTagged: translated.changes.every(c => c.after.startsWith('TRANSLATED ')),
         lines: translated.changes.map(c => c.line)
       },
+      ranWithoutWriting: afterRun === before,
+      approvedCount: approved.length,
+      appliedCount: applied.applied,
+      missed: applied.missed.length,
+      approvedLanded,
+      rejectedLeft,
       wroteToDisk: afterProof.includes('PROOFED '),
       restoredExactly: restored === before,
       restoredAgainExactly: restoredAgain === before
     };
+   } catch (e) { return { threw: String((e && e.message) || e) }; }
   })()`)
+  if (ran.threw) check('the pass probe ran', false, ran.threw)
+  // So a probe that fell over fails its own checks rather than taking the run down.
+  ran.proofread = ran.proofread ?? {}
+  ran.translated = ran.translated ?? {}
 
   check('a proofreading pass runs without error', ran.proofread.error === null,
     String(ran.proofread.error))
@@ -2422,7 +2468,14 @@ app.whenReady().then(async () => {
     String(ran.proofread.skipped))
   check('the proofreader was asked, not the translator', ran.proofread.allTagged === true,
     JSON.stringify(ran.proofread.sample))
-  check('the corrections reached the file on disk', ran.wroteToDisk === true)
+  // The pass proposes; approving is what writes. Half of them, here.
+  check('running the pass changes nothing on its own', ran.ranWithoutWriting === true)
+  check('the approved corrections reached the file on disk', ran.wroteToDisk === true)
+  check('exactly the approved ones were written',
+    ran.appliedCount === ran.approvedCount && ran.missed === 0,
+    `${ran.appliedCount} of ${ran.approvedCount}, ${ran.missed} missed`)
+  check('each approved line is the corrected one', ran.approvedLanded === true)
+  check('and every rejected line is exactly as it was', ran.rejectedLeft === true)
   // Every edit answers for itself, which is what makes forty of them reviewable.
   check('each correction says what it was for', ran.proofread.reasoned === true,
     JSON.stringify(ran.proofread.sample))
@@ -2452,6 +2505,125 @@ app.whenReady().then(async () => {
     'proofread skipped ' + ran.proofread.skipped + ' vs ' + transOnly.length +
     '; translated skipped ' + ran.translated.skipped + ' vs ' + proofOnly.length)
   check('the file is back to where it started', ran.restoredAgainExactly === true)
+
+  {
+    /*
+     * The same thing through the panel, which is where the writer does it: run
+     * the pass, reject one line, apply the rest. An editing pass makes
+     * judgement calls, and one call somebody disagrees with should cost them
+     * that line rather than the whole pass.
+     */
+    const reviewed = await js(`(async () => {${UNTIL}
+      const root = ${JSON.stringify(root)};
+      const project = await window.api.openProject(root);
+      await window.api.updateSettings(root, {
+        ...project.project.settings, translateCommand: ${JSON.stringify(stubCmd)}
+      });
+      const before = await window.api.readEpisode(root, 'chapter_2.rpy');
+
+      // In by the door the writer uses: the episode's own menu.
+      const row = Array.from(document.querySelectorAll('.episode-row'))
+        .find(e => e.textContent.includes('chapter_2'));
+      if (!row) return { stage: 'no chapter_2 row' };
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 200, clientY: 200 }));
+      await wait(300);
+      const entry = Array.from(document.querySelectorAll('.ctx-item'))
+        .find(b => (b.textContent || '').startsWith('Proofread'));
+      if (!entry) return { stage: 'no proofread in the menu' };
+      entry.click();
+      await until(() => document.querySelector('.seg-choice'));
+      Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .find(b => b.textContent === 'Proofread')?.click();
+
+      const list = await until(() => document.querySelector('.tr-changes li .tc-pick'), 60000);
+      if (!list) return { stage: 'no changes to review' };
+      await wait(400);
+
+      const rows = () => Array.from(document.querySelectorAll('.tr-changes li'));
+      const boxes = () => rows().map(li => li.querySelector('.tc-pick'));
+      const all = boxes().length;
+      const startedApproved = boxes().every(b => b.checked);
+      const countText = () => document.querySelector('.tr-count')?.textContent ?? '';
+      const applyLabel = () => Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .find(b => (b.textContent || '').startsWith('Apply'))?.textContent ?? null;
+
+      // Reject one, which is the whole point.
+      boxes()[1].click();
+      await wait(300);
+      const afterOne = { count: countText(), label: applyLabel(),
+        struck: rows()[1].className.includes('rejected') };
+
+      // And the two bulk buttons, before putting it back to all but one.
+      Array.from(document.querySelectorAll('.tr-pick button'))
+        .find(b => b.textContent === 'Reject all')?.click();
+      await wait(250);
+      const noneLabel = applyLabel();
+      const applyDisabled = Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .find(b => (b.textContent || '').startsWith('Apply'))?.disabled ?? null;
+      Array.from(document.querySelectorAll('.tr-pick button'))
+        .find(b => b.textContent === 'Approve all')?.click();
+      await wait(250);
+      const allLabel = applyLabel();
+      boxes()[1].click();
+      await wait(300);
+      return { stage: 'ready', all, startedApproved, afterOne, noneLabel, applyDisabled, allLabel,
+        before, rejectedLine: Number(rows()[1].querySelector('.tc-line')?.textContent?.replace(/[^0-9]/g, '')) };
+    })()`)
+
+    // The list as somebody actually sees it, one line rejected.
+    await shoot(win.webContents, 'pass-review.png')
+
+    check('the panel lists the changes to approve', reviewed.stage === 'ready',
+      JSON.stringify(reviewed).slice(0, 200))
+    check('with every one approved to begin with', reviewed.startedApproved === true)
+    check('rejecting one takes it out of the count',
+      (reviewed.afterOne?.count ?? '') === `${(reviewed.all ?? 0) - 1} of ${reviewed.all} approved`,
+      JSON.stringify(reviewed.afterOne))
+    check('and strikes it through rather than hiding it',
+      reviewed.afterOne?.struck === true, JSON.stringify(reviewed.afterOne))
+    check('the button says how many will be written',
+      (reviewed.afterOne?.label ?? '') === `Apply ${(reviewed.all ?? 0) - 1} changes`,
+      String(reviewed.afterOne?.label))
+    check('Reject all leaves nothing to apply',
+      (reviewed.noneLabel ?? '') === 'Apply 0 changes' && reviewed.applyDisabled === true,
+      `${reviewed.noneLabel} / disabled ${reviewed.applyDisabled}`)
+    check('and Approve all puts them all back',
+      (reviewed.allLabel ?? '') === `Apply ${reviewed.all} changes`, String(reviewed.allLabel))
+
+    const written = await js(`(async () => {${UNTIL}
+      Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .find(b => (b.textContent || '').startsWith('Apply'))?.click();
+      await until(() => Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .some(b => b.textContent === 'Done'));
+      await wait(600);
+      return { stage: 'ok', summary: document.querySelector('.tr-summary')?.textContent ?? '' };
+    })()`)
+    check('applying says how many were written', written.stage === 'ok' &&
+      /\d+ changes written to/.test(written.summary ?? ''), JSON.stringify(written))
+
+    const chapter = path.join(root, 'game', 'scripts', 'chapter_2.rpy')
+    const afterPanel = await fs.readFile(chapter, 'utf8')
+    const panelRows = afterPanel.split(/\r?\n/)
+    check('the rejected line was left exactly as it was',
+      !(panelRows[(reviewed.rejectedLine ?? 1) - 1] || '').includes('PROOFED '),
+      String(panelRows[(reviewed.rejectedLine ?? 1) - 1]))
+    check('while the rest were written',
+      (afterPanel.match(/PROOFED /g) ?? []).length === (reviewed.all ?? 0) - 1,
+      String((afterPanel.match(/PROOFED /g) ?? []).length) + ' of ' + ((reviewed.all ?? 0) - 1))
+
+    // And out through the panel's own way back, which is also how the run gets
+    // the file it started with.
+    const undone = await js(`(async () => {${UNTIL}
+      Array.from(document.querySelectorAll('.modal .actions-row button'))
+        .find(b => b.textContent === 'Put it all back')?.click();
+      await until(() => !document.querySelector('.tr-changes'));
+      await wait(800);
+      return { stage: 'ok' };
+    })()`)
+    check('the panel closes on the way out', undone.stage === 'ok', JSON.stringify(undone))
+    check('and putting it all back restores the file byte for byte',
+      (await fs.readFile(chapter, 'utf8')) === reviewed.before, 'the file did not come back')
+  }
 
   // Leave the project on a command that is not there, so nothing can reach out
   // to a real CLI later in the run.

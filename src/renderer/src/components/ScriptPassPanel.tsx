@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import type { PassMode } from '@shared/api'
+import { useEffect, useState } from 'react'
+import type { LineChange, PassMode } from '@shared/api'
 import { useStore } from '../state/store'
 
 interface Props {
@@ -13,24 +13,46 @@ interface Props {
 /**
  * Translate or proofread the dialogue in the open script.
  *
- * Both passes rewrite lines in a file the writer has been working in, so the
- * result is reviewable and revertible: it shows exactly what changed and
- * offers to put it back before anything else happens.
+ * Both passes propose changes to a file the writer has been working in, and
+ * nothing is written until the changes are approved. Approving all of them is
+ * one click, because most of the time that is the answer; but an editing pass
+ * makes judgement calls, and one call somebody disagrees with should cost them
+ * that line rather than the whole pass.
  */
 export default function ScriptPassPanel({ mode, fileName, beat, onClose }: Props) {
   const opened = useStore((s) => s.opened)
   const pass = useStore((s) => s.pass)
   const runScriptPass = useStore((s) => s.runScriptPass)
+  const applyPass = useStore((s) => s.applyPass)
   const revertPass = useStore((s) => s.revertPass)
   const clearPass = useStore((s) => s.clearPass)
 
   const [scope, setScope] = useState<'file' | 'beat'>(beat ? 'beat' : 'file')
+  /** Lines to write, by line number. Everything the pass found, to begin with. */
+  const [approved, setApproved] = useState<Set<number>>(new Set())
+
+  const proposed = pass?.changes
+  useEffect(() => {
+    setApproved(new Set((proposed ?? []).map((c) => c.line)))
+  }, [proposed])
 
   if (!opened) return null
   const { sourceLanguage, targetLanguage } = opened.project.settings
   const running = pass?.running === true
   const done = pass && !pass.running
   const proofing = mode === 'proofread'
+
+  const changes: LineChange[] = pass?.changes ?? []
+  const picked = changes.filter((c) => approved.has(c.line))
+
+  function toggle(line: number): void {
+    setApproved((was) => {
+      const next = new Set(was)
+      if (next.has(line)) next.delete(line)
+      else next.add(line)
+      return next
+    })
+  }
 
   function start(): void {
     const lines =
@@ -141,31 +163,49 @@ export default function ScriptPassPanel({ mode, fileName, beat, onClose }: Props
           </>
         )}
 
-        {done && !pass.error && (
+        {done && !pass.error && !pass.applied && (
           <>
             <div className="tr-summary">
-              {pass.changes.length} line{pass.changes.length === 1 ? '' : 's'}{' '}
-              {pass.mode === 'proofread' ? 'corrected' : 'translated'}
+              {changes.length} line{changes.length === 1 ? '' : 's'}{' '}
+              {pass.mode === 'proofread' ? 'to correct' : 'to translate'}
               {pass.skipped > 0 &&
                 (pass.mode === 'proofread'
                   ? `, ${pass.skipped} still in ${sourceLanguage}`
                   : `, ${pass.skipped} already in ${targetLanguage}`)}
-              .
+              . Nothing is written until you say so.
             </div>
 
+            {changes.length > 0 && (
+              <div className="tr-pick">
+                <span className="tr-count">
+                  {picked.length} of {changes.length} approved
+                </span>
+                <button onClick={() => setApproved(new Set(changes.map((c) => c.line)))}>
+                  Approve all
+                </button>
+                <button onClick={() => setApproved(new Set())}>Reject all</button>
+              </div>
+            )}
+
             <ul className="tr-changes">
-              {pass.changes.map((c) => (
-                <li key={c.line}>
-                  <div className="tc-head">
+              {changes.map((c) => (
+                <li key={c.line} className={approved.has(c.line) ? '' : 'rejected'}>
+                  <label className="tc-head">
+                    <input
+                      type="checkbox"
+                      className="tc-pick"
+                      checked={approved.has(c.line)}
+                      onChange={() => toggle(c.line)}
+                    />
                     <span className="tc-line">Ln {c.line}</span>
                     {c.speaker && <span className="tc-speaker">{c.speaker}</span>}
-                  </div>
+                  </label>
                   <div className="tc-before">{c.before}</div>
                   <div className="tc-after">{c.after}</div>
                   {c.why && <div className="tc-why">{c.why}</div>}
                 </li>
               ))}
-              {pass.changes.length === 0 && (
+              {changes.length === 0 && (
                 <li className="tr-none">
                   {pass.mode === 'proofread'
                     ? 'Nothing to correct. Every line read clean.'
@@ -175,16 +215,60 @@ export default function ScriptPassPanel({ mode, fileName, beat, onClose }: Props
             </ul>
 
             <div className="actions-row">
-              {pass.changes.length > 0 && (
+              <button
+                onClick={() => {
+                  clearPass()
+                  onClose()
+                }}
+              >
+                {changes.length === 0 ? 'Close' : 'Discard'}
+              </button>
+              {changes.length > 0 && (
                 <button
-                  onClick={() => {
-                    void revertPass()
-                    onClose()
-                  }}
+                  className="primary"
+                  disabled={picked.length === 0}
+                  onClick={() => void applyPass(picked)}
                 >
-                  Put it back
+                  Apply {picked.length} change{picked.length === 1 ? '' : 's'}
                 </button>
               )}
+            </div>
+          </>
+        )}
+
+        {done && !pass.error && pass.applied && (
+          <>
+            <div className="tr-summary">
+              {pass.applied.count} change{pass.applied.count === 1 ? '' : 's'} written to{' '}
+              <code>{pass.fileName}</code>.
+            </div>
+            {pass.applied.missed.length > 0 && (
+              <>
+                <p className="hint">
+                  {pass.applied.missed.length} could not be applied: those lines had been edited
+                  since the pass read them, so they were left as they are.
+                </p>
+                <ul className="tr-changes">
+                  {pass.applied.missed.map((c) => (
+                    <li key={c.line} className="rejected">
+                      <div className="tc-head">
+                        <span className="tc-line">Ln {c.line}</span>
+                      </div>
+                      <div className="tc-after">{c.after}</div>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            <div className="actions-row">
+              <button
+                onClick={() => {
+                  void revertPass()
+                  onClose()
+                }}
+              >
+                Put it all back
+              </button>
               <button
                 className="primary"
                 onClick={() => {
@@ -192,7 +276,7 @@ export default function ScriptPassPanel({ mode, fileName, beat, onClose }: Props
                   onClose()
                 }}
               >
-                Keep
+                Done
               </button>
             </div>
           </>

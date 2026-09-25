@@ -408,6 +408,14 @@ export interface RenpyWriterApi {
   ): Promise<OpenedProject>
   moveBeat(renpyRoot: string, input: MoveBeatRequest): Promise<MoveBeatOutcome>
   runScriptPass(renpyRoot: string, input: ScriptPassRequest): Promise<ScriptPassOutcome>
+  /**
+   * Write back the changes that were approved. A line whose words have moved
+   * on since the pass ran is reported as missed rather than overwritten.
+   */
+  applyPassChanges(
+    renpyRoot: string,
+    input: { fileName: string; changes: LineChange[] }
+  ): Promise<{ applied: number; missed: LineChange[] }>
 
   /** Point an episode at a render folder. */
   setEpisodeRenders(
@@ -498,6 +506,7 @@ export const IPC = {
   removeBeat: 'beats:remove',
   planRemoveBeat: 'beats:planRemove',
   runScriptPass: 'script:pass',
+  applyPassChanges: 'script:applyPass',
   capabilities: 'host:capabilities',
   gitStatus: 'git:status',
   gitFetchStatus: 'git:fetchStatus',

@@ -94,6 +94,7 @@ const WRITES: ReadonlySet<string> = new Set([
   IPC.updateBeat,
   IPC.removeBeat,
   IPC.runScriptPass,
+  IPC.applyPassChanges,
   IPC.setEpisodeRenders,
   IPC.convertRenders,
   IPC.writeEpisode,

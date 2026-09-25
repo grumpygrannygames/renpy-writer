@@ -50,6 +50,42 @@ export interface PassResult {
   error?: string
 }
 
+/**
+ * Write the changes somebody approved back into the script.
+ *
+ * Matched on the line the change came from *and* the words that were there.
+ * The file can have moved on between the pass and the approval -- the writer
+ * may have been typing in the other pane the whole time it ran -- and a change
+ * applied by line number alone would then overwrite a line it never saw. Those
+ * come back as missed rather than being forced.
+ */
+export function applyChanges(
+  source: string,
+  accepted: LineChange[]
+): { content: string; applied: number; missed: LineChange[] } {
+  const doc = parseDocument(source)
+  const nodes: ScriptNode[] = [...doc.nodes]
+  const missed: LineChange[] = []
+  let applied = 0
+
+  for (const change of accepted) {
+    const node = nodes[change.line - 1]
+    if (!node || (node.kind !== 'dialogue' && node.kind !== 'choice')) {
+      missed.push(change)
+      continue
+    }
+    if (unescapeText(node.text) !== change.before) {
+      missed.push(change)
+      continue
+    }
+    nodes[change.line - 1] = touch(node as never, { text: escapeText(change.after) } as never)
+    applied++
+  }
+
+  if (applied === 0) return { content: source, applied, missed }
+  return { content: serializeDocument({ ...doc, nodes }), applied, missed }
+}
+
 /** Accent for a script variable, looked up through its profile. */
 function accentFor(varName: string, profiles: CharacterNote[]): string | undefined {
   return profiles.find((p) => p.varNames.includes(varName))?.accent

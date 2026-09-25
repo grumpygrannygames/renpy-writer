@@ -2025,6 +2025,39 @@ label.check input {
   text-decoration: line-through;
   margin-bottom: 2px;
 }
+/* Approving and rejecting, above the list it acts on. */
+.tr-pick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.tr-pick .tr-count {
+  flex: 1;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.tr-pick button {
+  padding: 3px 9px;
+  font-size: 12px;
+}
+.tr-changes .tc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.tr-changes .tc-pick {
+  width: auto;
+  margin: 0;
+}
+/* A rejected change stays legible, but plainly out of the running. */
+.tr-changes li.rejected {
+  opacity: 0.45;
+}
+.tr-changes li.rejected .tc-after {
+  text-decoration: line-through;
+}
 /* What the edit was for, under the pair it explains. */
 .tc-why {
   margin-top: 3px;

@@ -35,6 +35,7 @@ import { endsBlock, opensBlock, stripComment } from '../src/shared/renpy/indent'
 import { resolveImageName, readPortrait } from '../src/core/renpy/images'
 import { imageNameAt } from '../src/renderer/src/imageHover'
 import { appendBeat, moveBeat, planRemoveBeat, removeBeat } from '../src/core/renpy/restructure'
+import { applyChanges } from '../src/core/passes'
 import { classifyLine, needsProofreading, needsTranslation } from '../src/core/passes/language'
 import { buildPrompt, buildProofreadPrompt, parseResponse } from '../src/core/passes/prompt'
 import { runPass } from '../src/core/passes'
@@ -3455,6 +3456,64 @@ async function main() {
       JSON.stringify([...revisions.byId]))
     check('a translations reply still parses',
       parseResponse('{"translations":[{"id":1,"text":"x"}]}').byId.get(1) === 'x')
+  }
+
+  console.log('\n[approving a pass line by line]')
+  {
+    const L = String.fromCharCode(10)
+    const script = [
+      'label D17_TEST:',
+      '    nadia "Answer me, and no bullshit."',
+      '    omar "I am not certain that I understand."',
+      '    "The room was quiet."',
+      '    return',
+      ''
+    ].join(L)
+
+    const changes = [
+      { line: 2, speaker: 'nadia', before: 'Answer me, and no bullshit.', after: 'Answer me. No bullshit.' },
+      { line: 3, speaker: 'omar', before: 'I am not certain that I understand.', after: "I'm not sure I follow." },
+      { line: 4, speaker: null, before: 'The room was quiet.', after: 'The room went quiet.' }
+    ]
+
+    // The one somebody disagreed with costs them that line, not the pass.
+    const some = applyChanges(script, [changes[0], changes[2]])
+    check('only the approved lines are written', some.applied === 2, JSON.stringify(some.applied))
+    check('the approved ones read as approved',
+      some.content.includes('nadia "Answer me. No bullshit."') &&
+        some.content.includes('"The room went quiet."'), some.content)
+    check('and the rejected one is exactly as it was',
+      some.content.includes('omar "I am not certain that I understand."'), some.content)
+    check('nothing else in the file moved',
+      some.content.includes('label D17_TEST:') && some.content.includes('    return'), some.content)
+
+    const none = applyChanges(script, [])
+    check('approving nothing writes nothing',
+      none.applied === 0 && none.content === script, String(none.applied))
+
+    const all = applyChanges(script, changes)
+    check('approving everything writes everything', all.applied === 3, String(all.applied))
+
+    /*
+     * The file can move on while the list is being read -- the writer may have
+     * been typing in the other pane the whole time the pass ran. A change
+     * approved against words that are no longer there is not applied over the
+     * top of them.
+     */
+    const edited = script.replace('The room was quiet.', 'The room was very quiet.')
+    const stale = applyChanges(edited, changes)
+    check('a line edited since the pass ran is left alone',
+      stale.applied === 2 && stale.missed.length === 1, JSON.stringify(stale.missed))
+    check('and the words the writer typed are still there',
+      stale.content.includes('"The room was very quiet."'), stale.content)
+    check('the missed one is named so it can be reported',
+      stale.missed[0].line === 4, JSON.stringify(stale.missed[0]))
+
+    // A line number pointing at something that is not dialogue at all.
+    const wrong = applyChanges(script, [{ line: 1, speaker: null, before: 'x', after: 'y' }])
+    check('a change aimed at a line that is not dialogue is missed, not forced',
+      wrong.applied === 0 && wrong.missed.length === 1 && wrong.content === script,
+      JSON.stringify(wrong))
   }
 
   console.log('\n[proofreading: applying results to a script]')

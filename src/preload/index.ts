@@ -6,6 +6,7 @@ import type {
   MoveBeatRequest,
   CommitRequest,
   Decision,
+  LineChange,
   ScriptPassRequest,
   RenpyWriterApi
 } from '@shared/api'
@@ -47,6 +48,8 @@ const api: RenpyWriterApi = {
     ipcRenderer.invoke(IPC.moveBeat, root, input),
   runScriptPass: (root: string, input: ScriptPassRequest) =>
     ipcRenderer.invoke(IPC.runScriptPass, root, input),
+  applyPassChanges: (root: string, input: { fileName: string; changes: LineChange[] }) =>
+    ipcRenderer.invoke(IPC.applyPassChanges, root, input),
   capabilities: () => ipcRenderer.invoke(IPC.capabilities),
   gitStatus: (root: string) => ipcRenderer.invoke(IPC.gitStatus, root),
   gitPull: (root: string) => ipcRenderer.invoke(IPC.gitPull, root),

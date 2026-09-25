@@ -5,6 +5,7 @@ import type {
   CreateEpisodeInput,
   CreateProjectInput,
   DeleteCharacterRequest,
+  LineChange,
   OpenedProject
 } from '@shared/api'
 import { IPC } from '@shared/api'
@@ -31,7 +32,7 @@ import {
   planRemoveBeat,
   removeBeat as cutBeat
 } from '@core/renpy/restructure'
-import { runPass } from '@core/passes'
+import { applyChanges, runPass } from '@core/passes'
 import {
   BUILT_IN_ENCODER,
   convertBatch,
@@ -578,8 +579,27 @@ export function registerHandlers(register: Register, host: HostServices): void {
       if (result.error) {
         return { changes: [], skipped: result.skipped, previous, error: result.error }
       }
-      if (result.changes.length > 0) await provider.writeText(rel, result.content)
+      // Nothing is written here. What comes back is a proposal, and the
+      // script changes only once somebody has approved the lines they want.
       return { changes: result.changes, skipped: result.skipped, previous }
+    }
+  )
+
+  /**
+   * Write back the changes somebody approved, and say which could not be.
+   *
+   * A line the writer edited while reading the list is left alone rather than
+   * overwritten: the change was approved against words that are no longer
+   * there.
+   */
+  register(
+    IPC.applyPassChanges,
+    async (root: string, input: { fileName: string; changes: LineChange[] }) => {
+      const provider = ws(root)
+      const { rel } = await locate(root, input.fileName)
+      const result = applyChanges(await provider.readText(rel), input.changes)
+      if (result.applied > 0) await provider.writeText(rel, result.content)
+      return { applied: result.applied, missed: result.missed }
     }
   )
 

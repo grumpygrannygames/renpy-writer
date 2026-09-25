@@ -191,12 +191,18 @@ interface AppState {
     mode: PassMode
     running: boolean
     fileName: string | null
+    /** What the pass proposes. Nothing is written until these are approved. */
     changes: LineChange[]
     skipped: number
+    /** The file as it was before any of this, for putting it all back. */
     previous: string | null
+    /** Set once the approved changes have been written. */
+    applied?: { count: number; missed: LineChange[] }
     error?: string
   } | null
   runScriptPass: (mode: PassMode, fileName: string, lines?: number[]) => Promise<void>
+  /** Write the changes that were approved, leaving the rest as they were. */
+  applyPass: (changes: LineChange[]) => Promise<void>
   revertPass: () => Promise<void>
   clearPass: () => void
   closeTab: (key: string) => void
@@ -599,7 +605,6 @@ export const useStore = create<AppState>((set, get) => ({
           error: outcome.error
         }
       })
-      if (outcome.changes.length > 0) await get().reloadTab(fileName)
     } catch (e) {
       set({
         pass: {
@@ -612,6 +617,28 @@ export const useStore = create<AppState>((set, get) => ({
           error: message(e)
         }
       })
+    }
+  },
+
+  applyPass: async (changes) => {
+    const { opened, pass } = get()
+    if (!opened || !pass?.fileName) return
+    // Typed lines go to disk first: this applies against the file, and an
+    // editor holding a newer version would write straight back over it.
+    await get().flushPendingSaves()
+    try {
+      const result = await api.applyPassChanges(opened.project.renpyRoot, {
+        fileName: pass.fileName,
+        changes
+      })
+      await get().reloadTab(pass.fileName)
+      set((s) =>
+        s.pass
+          ? { pass: { ...s.pass, applied: { count: result.applied, missed: result.missed } } }
+          : {}
+      )
+    } catch (e) {
+      set((s) => (s.pass ? { pass: { ...s.pass, error: message(e) } } : {}))
     }
   },
 
