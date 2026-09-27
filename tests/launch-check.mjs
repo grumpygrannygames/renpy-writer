@@ -3276,40 +3276,62 @@ app.whenReady().then(async () => {
       /^Save and send \d+ file/.test(opened.primary ?? ''), String(opened.primary))
 
     /*
-     * Grey with nothing said about it is how somebody ends up believing the
-     * app cannot push. Everything else here is ready -- the files tick
-     * themselves, the repo is clean -- so the only thing holding it is the
-     * message, and the panel has to say so.
+     * There is always a message, worked out from what is ticked, so saving
+     * never waits on a box being filled in -- which is how somebody came to
+     * believe the app could not push at all.
      */
-    const grey = await js(`(async () => {${UNTIL}
+    const worked = await js(`(async () => {${UNTIL}
+      const input = () => document.querySelector('.sync-modal .field input');
       const save = () => Array.from(document.querySelectorAll('.sync-modal .actions-row button'))
         .find(b => (b.textContent || '').startsWith('Save and send'));
-      const why = () => document.querySelector('.sync-blocked')?.textContent ?? null;
-      const blank = { disabled: save()?.disabled ?? null, why: why() };
+      const setVal = (v) => {
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+          .call(input(), v);
+        input().dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      const first = { value: input()?.value ?? null, disabled: save()?.disabled ?? null };
 
-      const input = document.querySelector('.sync-modal .field input');
-      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
-        .call(input, 'A line about what changed');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
+      // Untick the notes, and the message follows.
+      const notesGroup = Array.from(document.querySelectorAll('.sync-groups > li'))
+        .find(li => (li.textContent || '').includes('Characters, notes and outline'));
+      const groupBox = notesGroup?.querySelector('.sg-head input');
+      groupBox?.click();
       await wait(300);
-      const typed = { disabled: save()?.disabled ?? null, why: why() };
+      const unticked = input()?.value ?? null;
+      groupBox?.click();
+      await wait(300);
 
-      // And back to empty, so the section after this types its own.
-      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
-        .call(input, '');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      await wait(300);
-      return { stage: 'ok', blank, typed };
+      // Typed over, the writer's own words win.
+      setVal('My own words');
+      await wait(200);
+      const typed = input()?.value ?? null;
+      // Emptied, it goes back to the worked-out one rather than to nothing.
+      setVal('');
+      await wait(200);
+      return {
+        stage: 'ok', first, unticked, typed,
+        emptied: input()?.value ?? null,
+        emptiedDisabled: save()?.disabled ?? null,
+        hint: document.querySelector('.sync-blocked')?.textContent ?? null
+      };
     })()`)
-    await shoot(win.webContents, 'sync-blocked.png')
+    await shoot(win.webContents, 'sync-message.png')
 
-    check('with no message the save button is grey', grey.blank?.disabled === true,
-      JSON.stringify(grey))
-    check('and the panel says that is what it is waiting for',
-      (grey.blank?.why ?? '').includes('Say what changed'), String(grey.blank?.why))
-    check('typing one lights the button up', grey.typed?.disabled === false,
-      JSON.stringify(grey.typed))
-    check('and takes the note away with it', grey.typed?.why === null, String(grey.typed?.why))
+    check('the message box is filled in before anything is typed',
+      (worked.first?.value ?? '').length > 0, JSON.stringify(worked.first))
+    check('with what is being saved, in words',
+      (worked.first?.value ?? '').includes('character profiles'), String(worked.first?.value))
+    check('so the save button works straight away', worked.first?.disabled === false,
+      JSON.stringify(worked.first))
+    check('unticking the notes takes them out of the message',
+      !(worked.unticked ?? 'character profiles').includes('character profiles'),
+      String(worked.unticked))
+    check('typing replaces it', worked.typed === 'My own words', String(worked.typed))
+    check('and emptying the box brings the worked-out one back',
+      worked.emptied === worked.first?.value && worked.emptiedDisabled === false,
+      JSON.stringify(worked))
+    check('with nothing written beside the button about it', worked.hint === null,
+      String(worked.hint))
 
     // Save everything, which should reach the remote.
     const saved = await js(`(async () => {
@@ -6373,19 +6395,6 @@ app.whenReady().then(async () => {
       back.stage === 'ok' && !(back.banner ?? '').includes('could not be read'), String(back.banner))
     const count = await js(`(async () => (await window.api.readReference(${JSON.stringify(root)})).characters.length)()`)
     check('and every profile is still there', count === profiles, `${count} of ${profiles}`)
-  }
-
-  console.log(`\n${pass} passed, ${fail} failed`)
-  win.destroy()
-  await fs.rm(root, { recursive: true, force: true }).catch(() => {})
-  app.exit(fail === 0 ? 0 : 1)
-}).catch((e) => {
-  // A probe that throws rejects the run, and a rejected run just sits
-  // there until the watchdog. Say what broke, and what passed before it.
-  console.log(`  FAIL the run itself threw -- ${e?.stack ?? e}`)
-  console.log(`${pass} passed, ${fail + 1} failed`)
-  app.exit(1)
-})
 
     /*
      * A label defined twice: Ren'Py will not start, and the outline used to
@@ -6414,3 +6423,16 @@ app.whenReady().then(async () => {
     const clean = await reopen()
     check('renamed away, it says nothing', !(clean.banner ?? '').includes('is defined twice'),
       String(clean.banner))
+  }
+
+  console.log(`\n${pass} passed, ${fail} failed`)
+  win.destroy()
+  await fs.rm(root, { recursive: true, force: true }).catch(() => {})
+  app.exit(fail === 0 ? 0 : 1)
+}).catch((e) => {
+  // A probe that throws rejects the run, and a rejected run just sits
+  // there until the watchdog. Say what broke, and what passed before it.
+  console.log(`  FAIL the run itself threw -- ${e?.stack ?? e}`)
+  console.log(`${pass} passed, ${fail + 1} failed`)
+  app.exit(1)
+})

@@ -7,6 +7,7 @@ import type {
   GitStatus
 } from '@shared/api'
 import { useStore } from '../state/store'
+import { commitMessageFor } from '@shared/commitMessage'
 import ConflictPanel from './ConflictPanel'
 import { api } from '../api'
 
@@ -65,6 +66,7 @@ export default function SyncPanel({ onClose }: { onClose: () => void }) {
 
   const [status, setStatus] = useState<GitStatus | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  /** What the writer typed, when they typed anything. Empty means use the worked-out one. */
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [outcome, setOutcome] = useState<GitResult | null>(
@@ -156,21 +158,15 @@ export default function SyncPanel({ onClose }: { onClose: () => void }) {
 
   const nothingTracked = status?.isRepo === false
   const conflicted = (status?.conflicted.length ?? 0) > 0
-  const canSave = selected.size > 0 && message.trim().length > 0 && !busy && !conflicted
-  /**
-   * Why the button is grey, in the words of the thing that is missing.
-   *
-   * A disabled button explains nothing: the commonest reason here is an empty
-   * message, and the placeholder used to be a whole plausible sentence, so the
-   * field looked filled in and the button looked broken.
+  /*
+   * There is always a message: worked out from the files that are ticked, so
+   * unticking one takes it out of the message too, and replaced by whatever
+   * the writer types instead. A save used to wait on this box being filled
+   * in, which read as a button that did not work.
    */
-  const blocked = (): string | null => {
-    if (busy || canSave) return null
-    if (conflicted) return 'Sort out the files above that came back changed on both sides first.'
-    if (selected.size === 0) return 'Tick at least one file to save.'
-    if (message.trim().length === 0) return 'Say what changed, in the box above, and this lights up.'
-    return null
-  }
+  const worked = commitMessageFor((status?.changes ?? []).filter((c) => selected.has(c.path)))
+  const saying = message.trim() || worked
+  const canSave = selected.size > 0 && !busy && !conflicted
 
   return (
     <div className="modal-backdrop" onClick={() => !busy && onClose()}>
@@ -283,9 +279,9 @@ export default function SyncPanel({ onClose }: { onClose: () => void }) {
               <label className="field">
                 <span>What changed?</span>
                 <input
-                  value={message}
-                  placeholder="commit message"
+                  value={message || worked}
                   onChange={(e) => setMessage(e.target.value)}
+                  onFocus={(e) => e.currentTarget.select()}
                 />
               </label>
             )}
@@ -323,14 +319,13 @@ export default function SyncPanel({ onClose }: { onClose: () => void }) {
               {busy === 'push' ? 'Sending…' : `Send ${status?.ahead} waiting`}
             </button>
           )}
-          {blocked() && <span className="sync-blocked">{blocked()}</span>}
           <button
             className="primary"
             disabled={!canSave}
             onClick={() =>
               void act('commit', () =>
                 api.gitCommit(root, {
-                  message,
+                  message: saying,
                   paths: [...selected],
                   push: true
                 })
