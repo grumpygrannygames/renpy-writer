@@ -376,10 +376,8 @@ export const useStore = create<AppState>((set, get) => ({
       set({ characters: cast })
       // Behind is worth saying on its own, and alongside anything else that
       // went wrong reading the project rather than instead of it.
-      if (opened.syncNotice) {
-        const notice = opened.syncNotice
-        set((s) => ({ error: s.error ? `${s.error} ${notice}` : notice }))
-      }
+      const said = [opened.syncNotice, ...(opened.warnings ?? [])].filter(Boolean).join(' ')
+      if (said) set((s) => ({ error: s.error ? `${s.error} ${said}` : said }))
       // After the reference, so a character tab has a profile to show.
       await restoreTabs(root, get, set)
       await get().refreshProjects()

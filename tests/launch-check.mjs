@@ -6386,3 +6386,31 @@ app.whenReady().then(async () => {
   console.log(`${pass} passed, ${fail + 1} failed`)
   app.exit(1)
 })
+
+    /*
+     * A label defined twice: Ren'Py will not start, and the outline used to
+     * be rewritten with a new id on every open. Said on opening now, and the
+     * outline holds still.
+     */
+    const chapter = path.join(root, 'game', 'scripts', 'chapter_2.rpy')
+    const outlineFile = path.join(refDir, 'outline.json')
+    const original = await fs.readFile(chapter, 'utf8')
+    const first = original.match(/^label (\w+)\s*:/m)?.[1]
+    check('the fixture has a label to repeat', !!first, 'no label found')
+    await fs.writeFile(chapter, original + '\nlabel ' + first + ':\n    pass\n')
+
+    const twice = await reopen()
+    check('a label defined twice is said on opening',
+      (twice.banner ?? '').includes(`label ${first} is defined twice`), String(twice.banner))
+    check('with where, and what Ren\'Py will do about it',
+      (twice.banner ?? '').includes('chapter_2.rpy line') &&
+        (twice.banner ?? '').includes('will not start'), String(twice.banner))
+    const outlineOnce = await fs.readFile(outlineFile, 'utf8')
+    await reopen()
+    check('and opening again leaves the outline exactly as it was',
+      (await fs.readFile(outlineFile, 'utf8')) === outlineOnce, 'outline.json was rewritten')
+
+    await fs.writeFile(chapter, original)
+    const clean = await reopen()
+    check('renamed away, it says nothing', !(clean.banner ?? '').includes('is defined twice'),
+      String(clean.banner))

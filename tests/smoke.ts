@@ -8,6 +8,7 @@ import {
   readOutline,
   readSidecarProject,
   reconcileBeats,
+  duplicateLabelWarnings,
   writeOutline,
   writeSidecarProject
 } from '../src/core/projects/sidecar'
@@ -603,6 +604,71 @@ async function main() {
   check('scales to a full chapter', centreIndex(many, 24 * 3210 + 5) === 3210, String(centreIndex(many, 24 * 3210 + 5)))
 
   console.log('\n[a planned scene is a real one]')
+  console.log('\n[a label defined twice]')
+  {
+    /*
+     * The case from a real draft: INT_RITUAL_CHAMBER twice in one chapter,
+     * because a scene went back to a room it had been in. Matching beats to
+     * labels one per name kept only the last beat with that name, dropped the
+     * other outright -- notes and all -- and minted a new one, so every open
+     * rewrote the outline with a fresh id.
+     */
+    const ep = 'ep-10'
+    const beat = (id: string, label: string, order: number, description = '') =>
+      ({ id, episodeId: ep, label, title: label, order, description })
+    const outline = [
+      beat('b1', 'INT_HALLWAY', 0),
+      beat('b2', 'INT_RITUAL_CHAMBER', 1, 'the first time in'),
+      beat('b3', 'INT_RITUAL_CHAMBER', 2, 'coming back for Adriana'),
+      beat('b4', 'INT_INNER_SANCTUM', 3)
+    ]
+    const labels = ['INT_HALLWAY', 'INT_RITUAL_CHAMBER', 'INT_RITUAL_CHAMBER', 'INT_INNER_SANCTUM']
+    const shape = (beats: typeof outline) => beats.map((b) => `${b.id}:${b.label}`).join(' ')
+
+    const once = reconcileBeats(outline, ep, labels)
+    const twice = reconcileBeats(once, ep, labels)
+    check('each beat keeps its own id', shape(once) === shape(outline), shape(once))
+    check('and opening again changes nothing', JSON.stringify(once) === JSON.stringify(twice),
+      shape(twice))
+    check('so no beat is lost, and neither is what was noted on it',
+      once.map((b) => b.description).join('|') ===
+        '|the first time in|coming back for Adriana|', once.map((b) => b.description).join('|'))
+
+    // Fixed in the script -- one renamed -- the spare beat is kept as an
+    // orphan rather than dropped, like any beat whose label went away.
+    const renamed = ['INT_HALLWAY', 'INT_RITUAL_CHAMBER', 'INT_RITUAL_CHAMBER_2', 'INT_INNER_SANCTUM']
+    const after = reconcileBeats(outline, ep, renamed)
+    const spare = after.find((b) => b.id === 'b3')
+    check('a beat whose second name went away is kept, not deleted',
+      !!spare && spare.label === null && spare.description === 'coming back for Adriana',
+      JSON.stringify(spare))
+
+    // And said on opening, with where.
+    const parsedOf = (file: string, names: Array<[string, number]>) => ({
+      [file]: { fileName: file, lineCount: 300, hadBom: false,
+        labels: names.map(([label, startLine]) => ({ label, startLine, endLine: startLine + 5,
+          endKind: 'fallthrough' as const, trailingJump: null, fallsThroughTo: null, empty: false })) }
+    })
+    const twiceOver = duplicateLabelWarnings(parsedOf('chapter_10.rpy',
+      [['INT_HALLWAY', 80], ['INT_RITUAL_CHAMBER', 118], ['INT_RITUAL_CHAMBER', 216]]))
+    check('a label defined twice is reported', twiceOver.length === 1, JSON.stringify(twiceOver))
+    check('with both places it is defined',
+      (twiceOver[0] ?? '').includes('chapter_10.rpy line 118') &&
+        (twiceOver[0] ?? '').includes('chapter_10.rpy line 216'), String(twiceOver[0]))
+    check('and what it will do', (twiceOver[0] ?? '').includes('Ren\'Py will not start'),
+      String(twiceOver[0]))
+    // Labels are global: two files with the same one clash just the same.
+    const across = duplicateLabelWarnings({
+      ...parsedOf('chapter_9.rpy', [['EPILOGUE', 10]]),
+      ...parsedOf('chapter_10.rpy', [['EPILOGUE', 40]])
+    })
+    check('a label in two different files is reported too',
+      across.length === 1 && across[0].includes('chapter_9.rpy line 10') &&
+        across[0].includes('chapter_10.rpy line 40'), JSON.stringify(across))
+    check('and names that are each used once say nothing',
+      duplicateLabelWarnings(parsedOf('a.rpy', [['ONE', 1], ['TWO', 9]])).length === 0)
+  }
+
   {
     const L = String.fromCharCode(10)
     const script = [

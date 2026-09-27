@@ -31,6 +31,8 @@ export interface OpenedProject {
    * That is the right call, but only if somebody is told.
    */
   syncNotice?: string
+  /** Things wrong with the scripts that Ren'Py will refuse, found on opening. */
+  warnings?: string[]
 }
 
 /**

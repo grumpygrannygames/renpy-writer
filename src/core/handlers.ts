@@ -64,6 +64,7 @@ import {
   readOutline,
   readSidecarProject,
   reconcileBeats,
+  duplicateLabelWarnings,
   writeOutline,
   writeSidecarProject
 } from '@core/projects/sidecar'
@@ -236,7 +237,8 @@ async function loadProject(host: HostServices, renpyRoot: string): Promise<Opene
     beats,
     unregisteredFiles: onDisk.filter((f) => !registered.has(f)),
     parsedEpisodes,
-    ...(behind ? { syncNotice: behind } : {})
+    ...(behind ? { syncNotice: behind } : {}),
+    warnings: duplicateLabelWarnings(parsedEpisodes)
   }
 }
 
