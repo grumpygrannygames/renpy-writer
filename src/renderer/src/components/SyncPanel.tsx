@@ -164,7 +164,10 @@ export default function SyncPanel({ onClose }: { onClose: () => void }) {
    * the writer types instead. A save used to wait on this box being filled
    * in, which read as a button that did not work.
    */
-  const worked = commitMessageFor((status?.changes ?? []).filter((c) => selected.has(c.path)))
+  const worked = commitMessageFor(
+    (status?.changes ?? []).filter((c) => selected.has(c.path)),
+    (file) => opened?.episodes.find((e) => e.fileName === file)?.name
+  )
   const saying = message.trim() || worked
   const canSave = selected.size > 0 && !busy && !conflicted
 

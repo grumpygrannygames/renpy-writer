@@ -2436,22 +2436,31 @@ async function main() {
       ({ path, state, group, ...(scenes ? { scenes } : {}) }) as never
 
     // The four files the save button was waiting on, when this came up.
+    const named: Record<string, string> = { 'chapter_9_2.rpy': 'Chapter 9-2', 'chapter_10.rpy': 'Chapter 10' }
+    const nameOf = (file: string) => named[file]
     const real = commitMessageFor([
       ch('.gitignore', 'modified', 'other'),
-      ch('.renpywriter/drafts/chapter_10.rpy', 'modified', 'reference', ['INT_RITUAL_CHAMBER_2']),
+      ch('.renpywriter/drafts/chapter_10.rpy', 'modified', 'reference'),
       ch('.renpywriter/outline.json', 'modified', 'reference'),
-      ch('game/scripts/chapter_9_2.rpy', 'modified', 'script', ['D17_SECRET_RANDEZVOUS'])
-    ])
-    check('scripts first, by scene, then drafts, notes and the rest',
-      real === 'chapter_9_2: D17_SECRET_RANDEZVOUS; chapter_10 draft: INT_RITUAL_CHAMBER_2; outline; .gitignore',
-      real)
+      ch('game/scripts/chapter_9_2.rpy', 'modified', 'script')
+    ], nameOf)
+    check('scripts first, by the name the outline gives them, then drafts, notes and the rest',
+      real === 'Chapter 9-2 script changes; Chapter 10 draft changes; outline; .gitignore', real)
 
+    check('a script the outline does not know is named from its file',
+      commitMessageFor([ch('game/episode_1.rpy', 'modified', 'script')]) === 'Episode 1 script changes')
+    check('several changed scripts are one phrase',
+      commitMessageFor([ch('game/episode_1.rpy', 'modified', 'script'),
+        ch('game/episode_2.rpy', 'modified', 'script')]) === 'Episode 1 and Episode 2 script changes')
+    const four = commitMessageFor([1, 2, 3, 4].map((n) => ch(`game/episode_${n}.rpy`, 'modified', 'script')))
+    check('and past three, the rest are counted',
+      four === 'Episode 1, Episode 2, Episode 3 and 1 more script changes', four)
     check('a new script says so',
-      commitMessageFor([ch('game/scripts/chapter_11.rpy', 'untracked', 'script')]) === 'new chapter_11')
+      commitMessageFor([ch('game/scripts/chapter_11.rpy', 'untracked', 'script')]) === 'new Chapter 11 script')
     check('and a removed one',
-      commitMessageFor([ch('game/scripts/old.rpy', 'deleted', 'script')]) === 'removed old')
-    check('a script changed outside any scene is named on its own',
-      commitMessageFor([ch('game/scripts/script.rpy', 'modified', 'script')]) === 'script')
+      commitMessageFor([ch('game/scripts/old.rpy', 'deleted', 'script')]) === 'removed Old script')
+    check('a file called script.rpy is not a "Script script"',
+      commitMessageFor([ch('game/script.rpy', 'modified', 'script')]) === 'Script changes')
     check('pictures are counted, not listed',
       commitMessageFor([ch('game/images/a.webp', 'untracked', 'image'),
         ch('game/images/b.webp', 'untracked', 'image')]) === '2 pictures')
@@ -2459,13 +2468,8 @@ async function main() {
       commitMessageFor([ch('.renpywriter/characters.json', 'modified', 'reference'),
         ch('.renpywriter/notes.json', 'modified', 'reference')]) === 'character profiles; notes')
 
-    const busy = commitMessageFor([ch('game/scripts/chapter_9.rpy', 'modified', 'script',
-      ['A', 'B', 'C', 'D', 'E'])])
-    check('a script with many scenes names three and counts the rest',
-      busy === 'chapter_9: A, B, C and 2 more', busy)
-
     const many = commitMessageFor(Array.from({ length: 30 }, (_, i) =>
-      ch(`game/scripts/chapter_${i}.rpy`, 'modified', 'script', ['SOME_LONG_SCENE_NAME'])))
+      ch(`notes_${i}_with_a_long_file_name.txt`, 'modified', 'other')))
     check('a long list is cut short and says how much more there was',
       many.length <= 100 && /; and \d+ more$/.test(many), many)
     check('nothing to save is no message', commitMessageFor([]) === '')
@@ -2512,41 +2516,6 @@ async function main() {
         'label start:' + L + '    "Hello."' + L)
       await fsp.writeFile(nodePath.join(nadia, '.renpywriter', 'project.json'), '{}')
       await fsp.writeFile(nodePath.join(nadia, 'game', 'images', 'ch1', 'shot.webp'), 'not really')
-
-      // Which scenes a changed script touches, from the diff against the last
-      // commit. Committed first, then one line changed in the second scene.
-      {
-        const probe = nodePath.join(base, 'scenes')
-        await git(base, ['init', '--quiet', '--initial-branch=main', probe])
-        await git(probe, ['config', 'user.name', 'probe'])
-        await git(probe, ['config', 'user.email', 'probe@example.com'])
-        const scriptFile = nodePath.join(probe, 'chapter.rpy')
-        const lines = ['label FIRST:', '    "One."', '', 'label SECOND:', '    "Two."', '    "Three."', '']
-        await fsp.writeFile(scriptFile, lines.join(L))
-        await git(probe, ['add', '.'])
-        await git(probe, ['commit', '--quiet', '-m', 'start'])
-
-        await fsp.writeFile(scriptFile, lines.join(L).replace('"Three."', '"Three, changed."'))
-        const second = (await readStatus(probe)).changes.find((c) => c.path === 'chapter.rpy')
-        check('a changed line is put in the scene it is in',
-          JSON.stringify(second?.scenes) === '["SECOND"]', JSON.stringify(second))
-
-        await fsp.writeFile(scriptFile, lines.join(L)
-          .replace('"One."', '"One, changed."').replace('"Three."', '"Three, changed."'))
-        const both = (await readStatus(probe)).changes.find((c) => c.path === 'chapter.rpy')
-        check('and two scenes are named in the order they come',
-          JSON.stringify(both?.scenes) === '["FIRST","SECOND"]', JSON.stringify(both))
-
-        await fsp.writeFile(scriptFile, lines.filter((l) => l !== '    "Two."').join(L))
-        const cut = (await readStatus(probe)).changes.find((c) => c.path === 'chapter.rpy')
-        check('a line taken out counts against its scene too',
-          JSON.stringify(cut?.scenes) === '["SECOND"]', JSON.stringify(cut))
-
-        await fsp.writeFile(nodePath.join(probe, 'new.rpy'), 'label NEW:' + L + '    "Hi."' + L)
-        const brandNew = (await readStatus(probe)).changes.find((c) => c.path === 'new.rpy')
-        check('a script that is new has no scenes to name, only itself',
-          !!brandNew && brandNew.scenes === undefined, JSON.stringify(brandNew))
-      }
 
       const fresh = await readStatus(nadia)
       check('a new file shows as untracked', fresh.changes.length === 3 &&

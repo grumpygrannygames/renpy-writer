@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process'
 import { promises as fsp } from 'node:fs'
 import * as nodePath from 'node:path'
 import { readConflicts, resolvedText, type Decision, type FileConflict } from './conflicts'
-import { parseEpisode } from '@shared/renpy/labels'
 
 /**
  * Talking to git.
@@ -41,8 +40,6 @@ export interface GitChange {
   path: string
   state: ChangeState
   group: ChangeGroup
-  /** For a script that was already there: the scenes whose lines changed. */
-  scenes?: string[]
 }
 
 export interface GitIdentity {
@@ -249,53 +246,8 @@ export async function readStatus(cwd: string): Promise<GitStatus> {
   }
 
   result.changes.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }))
-  await Promise.all(
-    result.changes
-      .filter((c) => (c.state === 'modified' || c.state === 'renamed') && c.path.endsWith('.rpy'))
-      .map(async (c) => {
-        const scenes = await scenesChanged(cwd, c.path)
-        if (scenes.length > 0) c.scenes = scenes
-      })
-  )
   result.awaitingReview = await reviewedAt(cwd, result)
   return result
-}
-
-/**
- * The scenes a changed script touches, for the commit message.
- *
- * From the diff against the last commit, with no context lines: each hunk
- * says which lines of the file as it is now were added or changed, and the
- * scene is whichever label those lines sit under. A hunk that only removes
- * lines is counted against the scene the removal happened in. Lines above
- * the first label belong to no scene and are not named.
- *
- * Nothing here is worth failing a status over, so any trouble -- no commit
- * yet, a file that will not read -- comes back as no scenes.
- */
-async function scenesChanged(cwd: string, file: string): Promise<string[]> {
-  const diff = await run(cwd, ['diff', '-U0', '--no-color', '--no-ext-diff', 'HEAD', '--', file])
-  if (diff.code !== 0) return []
-  let text: string
-  try {
-    text = await fsp.readFile(nodePath.join(cwd, file), 'utf8')
-  } catch {
-    return []
-  }
-  const spans = parseEpisode(file, text).labels
-
-  const touched = new Set<string>()
-  for (const m of diff.stdout.matchAll(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/gm)) {
-    const start = Number(m[1])
-    const count = m[2] === undefined ? 1 : Number(m[2])
-    // A pure removal is reported as the line before it, in the new file.
-    const lines = count === 0 ? [Math.max(start, 1)] : Array.from({ length: count }, (_, k) => start + k)
-    for (const line of lines) {
-      const span = spans.find((s) => line >= s.startLine && line <= s.endLine)
-      if (span) touched.add(span.label)
-    }
-  }
-  return spans.map((s) => s.label).filter((label) => touched.has(label))
 }
 
 /**

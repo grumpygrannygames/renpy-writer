@@ -158,11 +158,6 @@ export interface GitChange {
   path: string
   state: GitChangeState
   group: GitChangeGroup
-  /**
-   * For a script that was already there: the scenes whose lines changed, in
-   * the order they are in the file. What a commit message is made from.
-   */
-  scenes?: string[]
 }
 
 export interface GitStatus {

@@ -5,17 +5,28 @@ import type { GitChange } from './api'
  *
  * Asking for one was the only thing between a writer and saving, and a box
  * that has to be filled in before a button works reads as a button that does
- * not. So there is always one: scripts first, by the scenes that changed in
- * them, then drafts, the writer's notes, pictures and anything else -- short
- * enough to read as one line in the history, and in words rather than paths.
+ * not. So there is always one: scripts first, by the name the episode goes by
+ * in the outline, then drafts, the writer's notes, pictures and anything else
+ * -- short enough to read as one line in the history, and in words rather
+ * than paths.
  *
- *     chapter_9_2: D17_SECRET_RANDEZVOUS; chapter_10 draft; outline; .gitignore
+ *     Chapter 9-2 script changes; Chapter 10 draft changes; outline; .gitignore
  *
- * The writer can still type their own over it.
+ * Scenes are not named. Label names read as code, and a list of them said
+ * less about a save than the episode it was in.
+ *
+ * `nameOf` gives an episode's name from its file name ("episode_1.rpy"); a
+ * script the outline does not know is named from the file itself. The writer
+ * can still type their own message over all of it.
  */
-export function commitMessageFor(changes: GitChange[]): string {
+export function commitMessageFor(
+  changes: GitChange[],
+  nameOf: (fileName: string) => string | undefined = () => undefined
+): string {
   if (changes.length === 0) return ''
 
+  const changed: string[] = []
+  const draftsChanged: string[] = []
   const scripts: string[] = []
   const drafts: string[] = []
   const notes: string[] = []
@@ -25,14 +36,16 @@ export function commitMessageFor(changes: GitChange[]): string {
 
   for (const change of changes) {
     const file = change.path.split('/').pop() ?? change.path
-    const stem = file.replace(/\.rpy$/i, '')
+    const name = nameOf(file) ?? nameFromFile(file)
 
     if (/^\.renpywriter\/drafts\/.+\.rpy$/i.test(change.path)) {
-      drafts.push(scriptPhrase(`${stem} draft`, change))
+      if (change.state === 'modified' || change.state === 'renamed') draftsChanged.push(name)
+      else drafts.push(`${verb(change)} ${name} draft`)
     } else if (change.path.startsWith('.renpywriter/')) {
-      notes.push(NOTES[file] ?? stem)
+      notes.push(NOTES[file] ?? file.replace(/\.json$/i, ''))
     } else if (/\.rpy$/i.test(file)) {
-      scripts.push(scriptPhrase(stem, change))
+      if (change.state === 'modified' || change.state === 'renamed') changed.push(name)
+      else scripts.push(`${verb(change)} ${withScript(name)}`)
     } else if (change.group === 'image') {
       images++
     } else if (change.group === 'audio') {
@@ -43,7 +56,9 @@ export function commitMessageFor(changes: GitChange[]): string {
   }
 
   const phrases = [
+    ...(changed.length ? [`${withScript(listed(changed))} changes`] : []),
     ...scripts,
+    ...(draftsChanged.length ? [`${listed(draftsChanged)} draft changes`] : []),
     ...drafts,
     ...unique(notes),
     ...(images ? [`${images} ${images === 1 ? 'picture' : 'pictures'}`] : []),
@@ -68,15 +83,30 @@ const NOTES: Record<string, string> = {
  */
 const LIMIT = 100
 
-/** One script: new, gone, or which of its scenes changed. */
-function scriptPhrase(name: string, change: GitChange): string {
-  if (change.state === 'untracked' || change.state === 'added') return `new ${name}`
-  if (change.state === 'deleted') return `removed ${name}`
-  const scenes = change.scenes ?? []
-  if (scenes.length === 0) return name
-  const shown = scenes.slice(0, 3).join(', ')
-  const more = scenes.length - 3
-  return more > 0 ? `${name}: ${shown} and ${more} more` : `${name}: ${shown}`
+/** "episode_1.rpy" -> "Episode 1", for a script the outline does not name. */
+function nameFromFile(fileName: string): string {
+  return fileName
+    .replace(/\.rpy$/i, '')
+    .split('_')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ')
+}
+
+function verb(change: GitChange): string {
+  return change.state === 'deleted' ? 'removed' : 'new'
+}
+
+/** "Episode 1 script", but a file called script.rpy is just "Script". */
+function withScript(name: string): string {
+  return /\bscript$/i.test(name) ? name : `${name} script`
+}
+
+/** "A", "A and B", "A, B and C", "A, B, C and 2 more". */
+function listed(names: string[]): string {
+  if (names.length === 1) return names[0]
+  if (names.length <= 3) return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  return `${names.slice(0, 3).join(', ')} and ${names.length - 3} more`
 }
 
 function unique(items: string[]): string[] {
