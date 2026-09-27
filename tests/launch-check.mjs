@@ -1177,12 +1177,33 @@ app.whenReady().then(async () => {
     const landedLine = Number((bar.match(/Ln ([0-9]+)/) || [])[1]) || 0;
     const landedOn = source.split(String.fromCharCode(10))[landedLine - 1] ?? null;
 
+    // Typing with the bar still open. Every edit used to send the selection
+    // back to the match, so the next letter typed replaced the found word.
+    const cmTile = document.querySelector('.cm-content')?.cmTile;
+    const cmView = (cmTile?.root ?? cmTile)?.view;
+    let typedOver = null;
+    if (cmView) {
+      const end = cmView.state.doc.length;
+      cmView.dispatch({ selection: { anchor: end } });
+      for (const ch of ['#', 'x']) {
+        const at = cmView.state.selection.main.head;
+        cmView.dispatch({ changes: { from: at, insert: ch }, selection: { anchor: at + 1 },
+          userEvent: 'input.type' });
+        await wait(300);
+      }
+      const sel = cmView.state.selection.main;
+      typedOver = { empty: sel.empty, atEnd: sel.head === cmView.state.doc.length,
+        tail: cmView.state.doc.sliceString(cmView.state.doc.length - 2) };
+      cmView.dispatch({ changes: { from: end, to: cmView.state.doc.length } });
+      await wait(300);
+    }
+
     key(document.querySelector('.find-input'), 'Escape');
     await wait(400);
 
     return {
       stage: 'ok', afterEnter, afterBack, none, closed, stillMarked,
-      codeCount, parkedLine, landedLine, landedOn
+      codeCount, parkedLine, landedLine, landedOn, typedOver
     };
   })()`)
 
@@ -1207,6 +1228,9 @@ app.whenReady().then(async () => {
     'parked on ' + stepping.parkedLine + ', landed on ' + stepping.landedLine)
   check('onto the line that was found',
     /beat 9/i.test(stepping.landedOn ?? ''), String(stepping.landedOn))
+  check('typing in the code with the bar open types, rather than jumping back to the match',
+    stepping.typedOver?.empty === true && stepping.typedOver?.atEnd === true &&
+      stepping.typedOver?.tail === '#x', JSON.stringify(stepping.typedOver))
 
   console.log('\n[character profiles]')
   const prof = await js(`(async () => {

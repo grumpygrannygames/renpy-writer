@@ -44,6 +44,8 @@ export default function CodeView({
   const [query, setQuery] = useState('')
   const [match, setMatch] = useState(0)
   const [findNonce, setFindNonce] = useState(0)
+  /** Bumped when the search asks to go somewhere: a new query, a step, reopening. */
+  const [jump, setJump] = useState(0)
   // Kept in refs so the editor is never rebuilt just because a callback changed.
   const onChangeRef = useRef(onChange)
   const onSaveRef = useRef(onSave)
@@ -186,7 +188,10 @@ export default function CodeView({
   const at = matches.length > 0 ? Math.min(match, matches.length - 1) : -1
 
   // A new search starts at the top of it.
-  useEffect(() => setMatch(0), [query])
+  useEffect(() => {
+    setMatch(0)
+    setJump((j) => j + 1)
+  }, [query])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -194,6 +199,7 @@ export default function CodeView({
         e.preventDefault()
         setFinding(true)
         setFindNonce((v) => v + 1)
+        setJump((j) => j + 1)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -202,6 +208,11 @@ export default function CodeView({
 
   // Select the match and bring it into view. Selecting rather than only
   // scrolling means the caret is already there when the bar is closed.
+  //
+  // Only when the search asks to go somewhere -- never because the text
+  // changed. It used to run on every edit too, so with the bar left open on
+  // "menu", each letter typed selected the next "menu" and the letter after
+  // it was typed over the word.
   useEffect(() => {
     const v = view.current
     if (!finding || !v || at < 0) return
@@ -214,9 +225,9 @@ export default function CodeView({
     })
     const timers = [80, 250].map((ms) => window.setTimeout(() => reportRef.current?.(), ms))
     return () => timers.forEach(clearTimeout)
-    // `matches` is derived from the same text the editor holds.
+    // `matches` and `at` are read as they are when the jump is asked for.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finding, at, matches, query.length])
+  }, [finding, jump])
 
   return (
     <>
@@ -226,7 +237,10 @@ export default function CodeView({
           onQuery={setQuery}
           total={matches.length}
           current={at}
-          onStep={(delta) => setMatch(step(at, matches.length, delta))}
+          onStep={(delta) => {
+            setMatch(step(at, matches.length, delta))
+            setJump((j) => j + 1)
+          }}
           onClose={() => {
             setFinding(false)
             setQuery('')
