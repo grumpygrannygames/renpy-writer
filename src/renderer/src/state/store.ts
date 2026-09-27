@@ -557,6 +557,10 @@ export const useStore = create<AppState>((set, get) => ({
   moveBeat: async (input) => {
     const opened = get().opened
     if (!opened) return
+    // A move rewrites the file and then reads it back into any open tab, so
+    // anything typed and not yet saved would be read over. On a phone -- type
+    // in Script, then move in Outline -- that is the normal order of things.
+    await get().flushPendingSaves()
     try {
       const outcome = await api.moveBeat(opened.project.renpyRoot, input)
       set({

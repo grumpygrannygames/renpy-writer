@@ -219,6 +219,9 @@ label.check input {
   flex: none;
 }
 .beat-row .title {
+  /* Allowed to be narrower than its words, so a long name ends in an
+     ellipsis instead of pushing the row's menu off a phone screen. */
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1483,6 +1486,72 @@ label.check input {
   margin: 0;
   font-size: 22px;
 }
+/* The menu at the end of a beat row: faint until reached for. */
+.beat-row .beat-more {
+  margin-left: auto;
+  flex: none;
+  padding: 0 8px;
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  line-height: 1;
+}
+.beat-row .kind + .beat-more {
+  margin-left: 6px;
+}
+.beat-row .beat-more:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+@media (hover: hover) {
+  .beat-row .beat-more {
+    opacity: 0;
+  }
+  .beat-row:hover .beat-more,
+  .beat-row .beat-more:focus-visible {
+    opacity: 1;
+  }
+}
+
+/*
+ * Always there in the phone layout, whatever the device says about hovering:
+ * narrow means phone to the rest of the app too -- the label actions are
+ * forced visible the same way -- and a tablet with a mouse, or a desktop
+ * window pulled narrow, should not have to find these by sweeping the list.
+ */
+.app.phone .beat-row .beat-more {
+  opacity: 1;
+  /* A thumb-sized target without a taller row: the padding makes it big
+     enough to hit, the negative margin gives the height back, since the row
+     beside it opens the scene and a near miss would do that instead. */
+  padding: 12px 14px;
+  margin-top: -12px;
+  margin-bottom: -12px;
+  margin-right: -8px;
+  color: var(--text-dim);
+  font-size: 16px;
+}
+
+/* Adding a beat from the outline, under the beats it will join. */
+.beat-add-open {
+  display: block;
+  margin: 2px 0 6px 28px;
+  padding: 3px 8px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.beat-add {
+  display: flex;
+  gap: 6px;
+  margin: 4px 8px 8px 28px;
+}
+.beat-add input {
+  flex: 1;
+  min-width: 0;
+}
+
 .ce-var {
   font-family: var(--mono);
   font-size: 12px;

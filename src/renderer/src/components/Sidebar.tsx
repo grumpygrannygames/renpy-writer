@@ -64,9 +64,111 @@ export default function Sidebar({
   const reorderEpisodes = useStore((s) => s.reorderEpisodes)
   const setEpisodeStatus = useStore((s) => s.setEpisodeStatus)
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null)
+  const moveBeat = useStore((s) => s.moveBeat)
+  const createBeat = useStore((s) => s.createBeat)
+  const clearLastMove = useStore((s) => s.clearLastMove)
+  const reportError = useStore((s) => s.reportError)
+  /** The episode a beat is being named for, and what has been typed so far. */
+  const [adding, setAdding] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
 
   if (!opened) return null
   const beats = opened.beats
+
+  /**
+   * Move a scene, and say so if it could not be done.
+   *
+   * The plot board shows what a move did in a note of its own, but that board
+   * is not where a phone moves things, so a refusal here goes to the banner --
+   * a move that silently did nothing is the thing not to have.
+   */
+  const move = async (
+    fromEpisodeId: string,
+    label: string,
+    toEpisodeId: string,
+    toIndex: number
+  ): Promise<void> => {
+    await moveBeat({ label, fromEpisodeId, toEpisodeId, toIndex })
+    const outcome = useStore.getState().lastMove
+    if (outcome?.error) reportError(outcome.error)
+    else if (outcome && outcome.warnings.length > 0) reportError(outcome.warnings.join(' '))
+    clearLastMove()
+  }
+
+  /**
+   * What can be done with one beat.
+   *
+   * Moving is by tapping rather than by dragging, because a phone browser
+   * sends no drag events from a finger: a list that can only be reordered by
+   * dragging is one that cannot be reordered on a phone at all. Up and down
+   * for a nudge, top and bottom for a long way, and another episode by name.
+   *
+   * Only a scene that is in the script can move -- moving is moving its lines
+   * -- so a beat that is not written yet says that instead of offering moves
+   * that would do nothing.
+   */
+  const beatMenu = (
+    ep: (typeof episodes)[number],
+    beat: (typeof beats)[number],
+    span: { label: string; startLine: number; endLine: number } | undefined,
+    at: { x: number; y: number }
+  ): MenuItem[] => {
+    const order = (parsed[ep.fileName]?.labels ?? []).map((s) => s.label)
+    const i = span ? order.indexOf(span.label) : -1
+    const last = order.length - 1
+    const elsewhere = episodes.filter((other) => other.id !== ep.id)
+
+    const moves: MenuItem[] = span
+      ? [
+          { label: 'Move up', disabled: i <= 0, onSelect: () => void move(ep.id, span.label, ep.id, i - 1) },
+          { label: 'Move down', disabled: i >= last, onSelect: () => void move(ep.id, span.label, ep.id, i + 1) },
+          { label: 'Move to top', disabled: i <= 0, onSelect: () => void move(ep.id, span.label, ep.id, 0) },
+          { label: 'Move to bottom', disabled: i >= last, onSelect: () => void move(ep.id, span.label, ep.id, -1) },
+          {
+            label: 'Move to another episode\u2026',
+            disabled: elsewhere.length === 0,
+            // The episodes, in the same place, as a menu of their own.
+            onSelect: () =>
+              setMenu({
+                x: at.x,
+                y: at.y,
+                items: elsewhere.map((other) => ({
+                  label: `To the end of ${other.name}`,
+                  onSelect: () => void move(ep.id, span.label, other.id, -1)
+                }))
+              })
+          }
+        ]
+      : [{ label: 'Not in the script yet, so there is nothing to move', disabled: true, onSelect: () => {} }]
+
+    const passes: MenuItem[] = capabilities.languagePasses
+      ? [
+          {
+            label: `Translate ${beat.title}`,
+            separated: true,
+            disabled: !span,
+            onSelect: () =>
+              span && onPass('translate', ep.fileName, { label: span.label, from: span.startLine, to: span.endLine })
+          },
+          {
+            label: `Proofread ${beat.title}`,
+            disabled: !span,
+            onSelect: () =>
+              span && onPass('proofread', ep.fileName, { label: span.label, from: span.startLine, to: span.endLine })
+          },
+          {
+            label: `Translate ${ep.name}`,
+            separated: true,
+            onSelect: () => onPass('translate', ep.fileName, null)
+          },
+          {
+            label: `Proofread ${ep.name}`,
+            onSelect: () => onPass('proofread', ep.fileName, null)
+          }
+        ]
+      : []
+    return [...moves, ...passes]
+  }
   const { project, episodes, unregisteredFiles } = opened
 
   return (
@@ -226,45 +328,8 @@ export default function Sidebar({
                     title={beat.label ?? 'Not written yet'}
                     onContextMenu={(e) => {
                       e.preventDefault()
-                      setMenu({
-                        x: e.clientX,
-                        y: e.clientY,
-                        items: [
-                          ...(capabilities.languagePasses ? [
-                          {
-                            label: `Translate ${beat.title}`,
-                            disabled: !span,
-                            onSelect: () =>
-                              span &&
-                              onPass('translate', ep.fileName, {
-                                label: span.label,
-                                from: span.startLine,
-                                to: span.endLine
-                              })
-                          },
-                          {
-                            label: `Proofread ${beat.title}`,
-                            disabled: !span,
-                            onSelect: () =>
-                              span &&
-                              onPass('proofread', ep.fileName, {
-                                label: span.label,
-                                from: span.startLine,
-                                to: span.endLine
-                              })
-                          },
-                          {
-                            label: `Translate ${ep.name}`,
-                            separated: true,
-                            onSelect: () => onPass('translate', ep.fileName, null)
-                          },
-                          {
-                            label: `Proofread ${ep.name}`,
-                            onSelect: () => onPass('proofread', ep.fileName, null)
-                          }
-                          ] : []),
-                        ]
-                      })
+                      const at = { x: e.clientX, y: e.clientY }
+                      setMenu({ ...at, items: beatMenu(ep, beat, span, at) })
                     }}
                     onClick={() => {
                       if (span) onRevealLine(ep.fileName, span.startLine)
@@ -283,9 +348,68 @@ export default function Sidebar({
                     {kind && END_KIND_LABEL[kind] && (
                       <span className="kind">{END_KIND_LABEL[kind]}</span>
                     )}
+                    {/* A finger has no right button: the same menu, on a tap. */}
+                    <button
+                      className="beat-more"
+                      title="Move this scene, and more"
+                      aria-label={`What can be done with ${beatName(beat.title)}`}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        const box = e.currentTarget.getBoundingClientRect()
+                        const at = { x: box.left, y: box.bottom + 4 }
+                        setMenu({ ...at, items: beatMenu(ep, beat, span, at) })
+                      }}
+                    >
+                      &hellip;
+                    </button>
                   </div>
                 )
               })}
+
+              {!isCollapsed &&
+                (adding === ep.id ? (
+                  <form
+                    className="beat-add"
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      const name = draft.trim()
+                      if (!name) return
+                      void createBeat(ep.id, name).then(() => {
+                        setDraft('')
+                        setAdding(null)
+                      })
+                    }}
+                  >
+                    <input
+                      autoFocus
+                      value={draft}
+                      placeholder="What happens here?"
+                      onChange={(e) => setDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          setAdding(null)
+                          setDraft('')
+                        }
+                      }}
+                    />
+                    <button type="button" onClick={() => { setAdding(null); setDraft('') }}>
+                      Cancel
+                    </button>
+                    <button type="submit" className="primary" disabled={!draft.trim()}>
+                      Add
+                    </button>
+                  </form>
+                ) : (
+                  <button
+                    className="beat-add-open"
+                    onClick={() => {
+                      setAdding(ep.id)
+                      setDraft('')
+                    }}
+                  >
+                    + Beat
+                  </button>
+                ))}
             </div>
           )
         })}

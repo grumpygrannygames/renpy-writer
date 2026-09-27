@@ -2250,8 +2250,9 @@ app.whenReady().then(async () => {
   check('the episode menu offers the draft toggle',
     entry.episodeMenu.some(l => l.includes('draft') || l.includes('game')),
     JSON.stringify(entry.episodeMenu))
+  // Among the moves, which every beat's menu has now: counted by name rather
+  // than by the length of the whole menu.
   check('right-clicking a beat offers both passes at both scopes',
-    entry.beatMenu.length === 4 &&
     entry.beatMenu.filter(l => l.startsWith('Translate')).length === 2 &&
     entry.beatMenu.filter(l => l.startsWith('Proofread')).length === 2,
     JSON.stringify(entry.beatMenu))
@@ -2263,7 +2264,11 @@ app.whenReady().then(async () => {
       bubbles: true, clientX: 200, clientY: 200
     }));
     await new Promise(r => setTimeout(r, 250));
-    const item = document.querySelector('.ctx-item');
+    // By name: the menu opens with the moves, and the first of those is greyed
+    // out on the first scene.
+    const item = Array.from(document.querySelectorAll('.ctx-item'))
+      .find(b => (b.textContent || '').startsWith('Translate'));
+    if (!item) return { stage: 'no Translate in the menu' };
     item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     const survivedPress = !!document.querySelector('.ctxmenu');
     // A real mouse sends mousedown before click. Clicking alone hid a bug where
@@ -2277,16 +2282,16 @@ app.whenReady().then(async () => {
       detail: b.querySelector('.d')?.textContent,
       on: b.classList.contains('on')
     }));
-    document.querySelector('.modal-backdrop').click();
+    document.querySelector('.modal-backdrop')?.click();
     await new Promise(r => setTimeout(r, 250));
     return { survivedPress, opened: !!modal, scopes, closed: !document.querySelector('.pass-modal') };
   })()`)
   check('the menu survives the press that selects an item', fromMenu.survivedPress === true)
   check('choosing translate opens the panel', fromMenu.opened === true)
   check('it opens scoped to that beat',
-    fromMenu.scopes.find(s => s.text === 'This beat')?.on === true, JSON.stringify(fromMenu.scopes))
+    (fromMenu.scopes ?? []).find(s => s.text === 'This beat')?.on === true, JSON.stringify(fromMenu.scopes))
   check('the beat scope names the label and its lines',
-    /lines \d+/.test(fromMenu.scopes.find(s => s.text === 'This beat')?.detail ?? ''),
+    /lines \d+/.test((fromMenu.scopes ?? []).find(s => s.text === 'This beat')?.detail ?? ''),
     JSON.stringify(fromMenu.scopes))
   check('the panel closes again', fromMenu.closed === true)
 
@@ -6423,6 +6428,196 @@ app.whenReady().then(async () => {
     const clean = await reopen()
     check('renamed away, it says nothing', !(clean.banner ?? '').includes('is defined twice'),
       String(clean.banner))
+  }
+
+  console.log('\n[beats on a phone]')
+  {
+    /*
+     * On a phone the plot board could not be reached -- its button was hidden
+     * on the grounds that the bar along the bottom "already offers" it, which
+     * it does not -- and it could not have helped anyway: every reorder in the
+     * app was drag and drop, and a phone browser sends no drag events from a
+     * finger. So the outline, the list a phone does show, gets a way to add a
+     * beat and a menu on each one to move it, by tapping.
+     */
+    win.setSize(390, 844)
+    const narrow = await settle(win.webContents, 'document.documentElement.clientWidth < 500')
+    await sleep(600)
+    check('the window is phone-sized', narrow === true)
+
+    const chapterFile = path.join(root, 'game', 'scripts', 'chapter_2.rpy')
+    const labelsOf = async () => (await fs.readFile(chapterFile, 'utf8'))
+      .split(/\r?\n/).map((l) => l.match(/^label\s+(\w+)\s*:/)?.[1]).filter(Boolean)
+
+    // The outline pane, from the bar along the bottom.
+    const pane = await js(`(async () => {${UNTIL}
+      document.querySelector('.app-error .ae-dismiss')?.click();
+      Array.from(document.querySelectorAll('.phone-nav .pn-tab'))
+        .find(b => (b.textContent || '').includes('Outline'))?.click();
+      await wait(500);
+      const row = Array.from(document.querySelectorAll('.episode-row'))
+        .find(e => e.textContent.includes('chapter_2'));
+      // Open, so its beats are showing.
+      const caret = row?.querySelector('.ep-caret.collapsed');
+      if (caret) { caret.click(); await wait(300); }
+      const group = row?.parentElement;
+      return {
+        stage: group ? 'ok' : 'no chapter_2 in the outline',
+        addShown: !!group?.querySelector('.beat-add-open'),
+        moreShown: group ? Array.from(group.querySelectorAll('.beat-row .beat-more'))
+          .every(b => getComputedStyle(b).opacity === '1' && b.getBoundingClientRect().right <= innerWidth) : false,
+        rows: group?.querySelectorAll('.beat-row').length ?? 0
+      };
+    })()`)
+    check('the outline offers to add a beat', pane.stage === 'ok' && pane.addShown === true,
+      JSON.stringify(pane))
+    check('and every beat has its menu, on screen, without hovering',
+      pane.moreShown === true && pane.rows > 2, JSON.stringify(pane))
+
+    // Adding one.
+    const added = await js(`(async () => {${UNTIL}
+      const group = () => Array.from(document.querySelectorAll('.episode-row'))
+        .find(e => e.textContent.includes('chapter_2'))?.parentElement;
+      group()?.querySelector('.beat-add-open')?.click();
+      const input = await until(() => group()?.querySelector('.beat-add input'));
+      if (!input) return { stage: 'no name field' };
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+        .call(input, 'on the train');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      await wait(150);
+      group()?.querySelector('.beat-add button.primary')?.click();
+      await until(() => !group()?.querySelector('.beat-add'));
+      await wait(1200);
+      return { stage: 'ok', titles: Array.from(group()?.querySelectorAll('.beat-row .title') ?? []).map(t => t.textContent) };
+    })()`)
+    check('a beat can be added from the outline on a phone',
+      added.stage === 'ok' && (added.titles ?? []).includes('ON THE TRAIN'), JSON.stringify(added))
+    check('and it is in the script', (await labelsOf()).includes('ON_THE_TRAIN'),
+      JSON.stringify((await labelsOf()).slice(-3)))
+
+    const before = await labelsOf()
+    await shoot(win.webContents, 'phone-outline.png')
+
+    // A beat's menu, by tapping its ... button.
+    // Rows found by the label they stand for -- their title attribute -- not
+    // by the name shown, which the outline upper-cases.
+    const menuFor = (label, choice) => js(`(async () => {${UNTIL}
+      const group = Array.from(document.querySelectorAll('.episode-row'))
+        .find(e => e.textContent.includes('chapter_2'))?.parentElement;
+      const row = Array.from(group?.querySelectorAll('.beat-row') ?? [])
+        .find(r => r.getAttribute('title') === ${JSON.stringify(label)});
+      if (!row) return { stage: 'no row' };
+      row.querySelector('.beat-more').click();
+      await until(() => document.querySelector('.ctx-item'));
+      const items = Array.from(document.querySelectorAll('.ctx-item'))
+        .map(b => ({ label: b.textContent, disabled: b.disabled }));
+      const pick = Array.from(document.querySelectorAll('.ctx-item'))
+        .find(b => b.textContent === ${JSON.stringify(choice)});
+      if (!pick) {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        return { stage: 'no ' + ${JSON.stringify(choice)}, items };
+      }
+      pick.click();
+      await wait(1500);
+      return { stage: 'ok', items };
+    })()`)
+
+    const first = before[0]
+    const down = await menuFor(first, 'Move down')
+    check('the menu offers to move a scene up, down, to either end or elsewhere',
+      ['Move up', 'Move down', 'Move to top', 'Move to bottom', 'Move to another episode…']
+        .every((l) => (down.items ?? []).some((i) => i.label === l)), JSON.stringify(down.items))
+    check('with up greyed out on the first scene, since there is nowhere up to go',
+      (down.items ?? []).find((i) => i.label === 'Move up')?.disabled === true)
+    const afterDown = await labelsOf()
+    check('Move down swaps it with the scene after it',
+      afterDown[0] === before[1] && afterDown[1] === first, JSON.stringify(afterDown.slice(0, 3)))
+
+    await menuFor(first, 'Move to bottom')
+    const afterBottom = await labelsOf()
+    const wentToBottom = afterBottom[afterBottom.length - 1] === first
+    check('Move to bottom puts it last', wentToBottom, JSON.stringify(afterBottom.slice(-2)))
+
+    await menuFor(first, 'Move to top')
+    // Only a real test if the move to the bottom happened: otherwise it was
+    // already at the top, and this would pass having moved nothing.
+    check('and Move to top puts it back where it began',
+      wentToBottom && (await labelsOf())[0] === first, JSON.stringify((await labelsOf()).slice(0, 2)))
+
+    // To another episode, by name.
+    const elsewhere = await js(`(async () => {${UNTIL}
+      const group = Array.from(document.querySelectorAll('.episode-row'))
+        .find(e => e.textContent.includes('chapter_2'))?.parentElement;
+      const row = Array.from(group?.querySelectorAll('.beat-row') ?? [])
+        .find(r => r.querySelector('.title')?.textContent === 'ON THE TRAIN');
+      row?.querySelector('.beat-more')?.click();
+      await until(() => document.querySelector('.ctx-item'));
+      Array.from(document.querySelectorAll('.ctx-item'))
+        .find(b => b.textContent === 'Move to another episode…')?.click();
+      await wait(300);
+      const offered = Array.from(document.querySelectorAll('.ctx-item')).map(b => b.textContent);
+      const target = Array.from(document.querySelectorAll('.ctx-item'))
+        .find(b => (b.textContent || '').startsWith('To the end of Chapter 1'));
+      if (!target) return { stage: 'no Chapter 1 offered', offered };
+      target.click();
+      await wait(1800);
+      return { stage: 'ok', offered };
+    })()`)
+    const chapter1 = await fs.readFile(path.join(root, 'game', 'scripts', 'chapter_1.rpy'), 'utf8')
+    check('Move to another episode lists the others by name',
+      elsewhere.stage === 'ok' && (elsewhere.offered ?? []).every((o) => o.startsWith('To the end of ')),
+      JSON.stringify(elsewhere))
+    check('and moves the scene to the end of the one chosen',
+      /label ON_THE_TRAIN\s*:/.test(chapter1) && !(await labelsOf()).includes('ON_THE_TRAIN'),
+      'not moved')
+
+    /*
+     * A move rewrites the file and reads it back into the open tab, and it
+     * used to do that without saving first -- so a sentence typed a moment
+     * before, in the same episode, was read over and lost.
+     */
+    const typed = await js(`(async () => {${UNTIL}
+      Array.from(document.querySelectorAll('.phone-nav .pn-tab'))
+        .find(b => (b.textContent || '').includes('Script'))?.click();
+      await wait(400);
+      const tab = Array.from(document.querySelectorAll('.tab'))
+        .find(t => (t.getAttribute('data-tab') || '').includes('chapter_2'));
+      tab?.click();
+      await wait(600);
+      Array.from(document.querySelectorAll('.mode-switch button'))
+        .find(b => b.textContent === 'Writer')?.click();
+      const line = await until(() => document.querySelector('.blk-dialogue .blk-text .blk-view'));
+      if (!line) return { stage: 'no line to edit' };
+      line.click();
+      const area = await until(() => document.querySelector('.blk-input'));
+      if (!area) return { stage: 'no editor' };
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+        .call(area, 'typed on the train');
+      area.dispatchEvent(new Event('input', { bubbles: true }));
+      // Leaving the field is what commits it; blur() does nothing in a window
+      // without focus, so the event it would have sent is sent instead.
+      area.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      // Well inside the autosave's wait: nothing has been written yet.
+      await wait(150);
+      Array.from(document.querySelectorAll('.phone-nav .pn-tab'))
+        .find(b => (b.textContent || '').includes('Outline'))?.click();
+      await wait(300);
+      const group = Array.from(document.querySelectorAll('.episode-row'))
+        .find(e => e.textContent.includes('chapter_2'))?.parentElement;
+      group?.querySelectorAll('.beat-row .beat-more')[1]?.click();
+      await until(() => document.querySelector('.ctx-item'));
+      Array.from(document.querySelectorAll('.ctx-item'))
+        .find(b => b.textContent === 'Move up')?.click();
+      await wait(1800);
+      return { stage: 'ok' };
+    })()`)
+    check('a move right after typing keeps what was typed',
+      typed.stage === 'ok' && (await fs.readFile(chapterFile, 'utf8')).includes('typed on the train'),
+      JSON.stringify(typed))
+
+    win.setSize(1400, 900)
+    await settle(win.webContents, 'document.documentElement.clientWidth > 1000')
+    await sleep(500)
   }
 
   console.log(`\n${pass} passed, ${fail} failed`)
