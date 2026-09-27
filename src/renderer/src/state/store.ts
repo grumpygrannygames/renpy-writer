@@ -260,7 +260,7 @@ interface AppState {
 function message(e: unknown): string {
   const raw = e instanceof Error ? e.message : String(e)
   // Electron prefixes IPC rejections with the handler location; strip it.
-  return raw.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '')
+  return raw.replace(/^Error invoking remote method '[^']+':\s*(\w*Error:\s*)?/, '')
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -315,11 +315,19 @@ export const useStore = create<AppState>((set, get) => ({
         // A read that failed must not look like a fresh install. Saying so
         // also stops someone re-adding a project on top of a list that is
         // only temporarily unreadable.
-        error: listing.error
-          ? listing.recovered
-            ? `${listing.error} Recovered the list from the backup beside ${listing.path}.`
-            : `${listing.error} Your projects are still on disk. Close the app and check ${listing.path} before adding anything.`
-          : null
+        //
+        // And a list that read fine says nothing at all -- rather than null,
+        // which is what it used to set. This runs at the end of opening a
+        // project, so null wiped whatever opening it had just found wrong:
+        // a notes file that could not be read, a server that could not catch
+        // up. Every one of those was reported and erased in the same breath.
+        ...(listing.error
+          ? {
+              error: listing.recovered
+                ? `${listing.error} Recovered the list from the backup beside ${listing.path}.`
+                : `${listing.error} Your projects are still on disk. Close the app and check ${listing.path} before adding anything.`
+            }
+          : {})
       })
     } catch (e) {
       // Surface it in the gate rather than letting it escape as an
@@ -337,11 +345,11 @@ export const useStore = create<AppState>((set, get) => ({
         opened, tabs: [], activeTab: null, parsed: opened.parsedEpisodes,
         characters: [], reference: EMPTY_REFERENCE, referenceFor: null
       })
-      const [cast, reference] = await Promise.all([
+      const [cast] = await Promise.all([
         api.scanCharacters(opened.project.renpyRoot),
-        api.readReference(opened.project.renpyRoot)
+        loadReference(opened.project.renpyRoot, set)
       ])
-      set({ characters: cast, reference, referenceFor: opened.project.renpyRoot })
+      set({ characters: cast })
       await get().refreshProjects()
     } catch (e) {
       set({ error: message(e) })
@@ -364,11 +372,14 @@ export const useStore = create<AppState>((set, get) => ({
         opened, tabs: [], activeTab: null, parsed: opened.parsedEpisodes,
         characters: [], reference: EMPTY_REFERENCE, referenceFor: null
       })
-      const [cast, reference] = await Promise.all([
-        api.scanCharacters(root),
-        api.readReference(root)
-      ])
-      set({ characters: cast, reference, referenceFor: root })
+      const [cast] = await Promise.all([api.scanCharacters(root), loadReference(root, set)])
+      set({ characters: cast })
+      // Behind is worth saying on its own, and alongside anything else that
+      // went wrong reading the project rather than instead of it.
+      if (opened.syncNotice) {
+        const notice = opened.syncNotice
+        set((s) => ({ error: s.error ? `${s.error} ${notice}` : notice }))
+      }
       // After the reference, so a character tab has a profile to show.
       await restoreTabs(root, get, set)
       await get().refreshProjects()
@@ -764,8 +775,7 @@ export const useStore = create<AppState>((set, get) => ({
       get,
       set
     )
-    const reference = await api.readReference(root)
-    set({ reference, referenceFor: root })
+    await loadReference(root, set)
     return {}
   },
 
@@ -786,8 +796,7 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const result = await api.deleteCharacter(root, { profileId, removeDefinitionsOf })
       set({ characters: result.characters })
-      const reference = await api.readReference(root)
-      set({ reference, referenceFor: root })
+      await loadReference(root, set)
       // A tab for somebody who is gone is a tab that says so and nothing else.
       if (profileId) {
         const key = `character:${profileId}`
@@ -861,10 +870,15 @@ export const useStore = create<AppState>((set, get) => ({
     }),
 
   flushReference: async () => {
-    if (referenceTimer) {
-      clearTimeout(referenceTimer)
-      referenceTimer = null
-    }
+    /*
+     * Only a save that is actually waiting. This runs every time the window
+     * loses focus and on the way out, and it used to write the notes each
+     * time regardless -- so a wrong copy in memory reached the disk on a
+     * simple alt-tab, with nobody having touched a note.
+     */
+    if (!referenceTimer) return
+    clearTimeout(referenceTimer)
+    referenceTimer = null
     const { opened, reference, referenceFor } = get()
     const root = opened?.project.renpyRoot ?? null
     if (!shouldWriteReference(root, root, referenceFor)) return
@@ -963,6 +977,28 @@ export const useStore = create<AppState>((set, get) => ({
 }))
 
 /** Drop a write that has not happened yet, because it is about to be wrong. */
+/**
+ * Read a project's notes into memory, and mark them safe to save back -- only
+ * if they were actually read.
+ *
+ * A notes file that is there but cannot be read leaves the notes in memory
+ * empty *and unsaveable*: referenceFor stays null, which is what the save
+ * guard checks, and the banner says which file and what to do. What this used
+ * to be was an empty list that looked loaded, and was written back over the
+ * real file at the next save.
+ */
+async function loadReference(
+  root: string,
+  set: (partial: Partial<AppState>) => void
+): Promise<void> {
+  try {
+    const reference = await api.readReference(root)
+    set({ reference, referenceFor: root })
+  } catch (e) {
+    set({ reference: EMPTY_REFERENCE, referenceFor: null, error: message(e) })
+  }
+}
+
 function forgetReference(): void {
   if (referenceTimer) clearTimeout(referenceTimer)
   referenceTimer = null

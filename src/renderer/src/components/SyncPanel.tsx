@@ -40,6 +40,28 @@ const STATE_LABEL: Record<GitChange['state'], string> = {
 export default function SyncPanel({ onClose }: { onClose: () => void }) {
   const opened = useStore((s) => s.opened)
   const root = opened?.project.renpyRoot
+  const flushPendingSaves = useStore((s) => s.flushPendingSaves)
+  const openProject = useStore((s) => s.openProject)
+
+  /**
+   * Take in what is on the remote, and then show it.
+   *
+   * A pull changes files underneath everything already on screen -- the open
+   * scripts, the notes, the outline, the cast -- and none of those used to be
+   * read again, so the panel said "in step" while the page went on showing
+   * what it had loaded before. Worse, the notes then saved back from memory
+   * over the files that had just arrived.
+   *
+   * So: anything still waiting to be saved goes to disk first, where the pull
+   * can see it and a clash is a question rather than a loss; then the pull;
+   * then the whole project is read again, tabs and all.
+   */
+  const takeIn = (run: () => Promise<GitResult>) => async (): Promise<GitResult> => {
+    await flushPendingSaves()
+    const result = await run()
+    if (result.ok && root) await openProject(root)
+    return result
+  }
 
   const [status, setStatus] = useState<GitStatus | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -90,7 +112,7 @@ export default function SyncPanel({ onClose }: { onClose: () => void }) {
         busy={busy === 'resolve'}
         onCancel={() => setOutcome(null)}
         onApply={(decisions: Decision[]) =>
-          void act('resolve', () => api.gitResolvePull(root, decisions))
+          void act('resolve', takeIn(() => api.gitResolvePull(root, decisions)))
         }
       />
     )
@@ -196,7 +218,7 @@ export default function SyncPanel({ onClose }: { onClose: () => void }) {
               <button
                 className="ghost"
                 disabled={!!busy || !status?.upstream}
-                onClick={() => void act('pull', () => api.gitPull(root))}
+                onClick={() => void act('pull', takeIn(() => api.gitPull(root)))}
               >
                 {busy === 'pull' ? 'Bringing in…' : 'Bring in changes'}
               </button>

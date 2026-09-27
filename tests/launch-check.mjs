@@ -3977,6 +3977,57 @@ app.whenReady().then(async () => {
   check('opening a project brings in what others pushed',
     theirNote.includes('"v":9'), theirNote.slice(0, 60))
 
+  /*
+   * When the server cannot bring its copy up to date, it opens what it has --
+   * and until now said so only in its own log. That is how a phone showed a
+   * day-old script with Sync reporting nothing to do: the pull on open had
+   * been refused over a clash in one notes file.
+   */
+  await fs.writeFile(path.join(elsewhere, '.renpywriter', 'notes.json'), '{"notes":[],"v":10}')
+  await gitRun(elsewhere, ['commit', '-am', 'Their second note'])
+  await gitRun(elsewhere, ['push', '--quiet'])
+  // And a different edit to the same line here, not yet saved anywhere.
+  await fs.writeFile(path.join(root, '.renpywriter', 'notes.json'), '{"notes":[],"v":11}')
+
+  const behind = await webJs(`(async () => {
+    const opened = await window.renpyWriter.currentApi().openProject(${JSON.stringify(root)});
+    return { notice: opened.syncNotice ?? null };
+  })()`)
+  check('a refused catch-up comes back with the project, not just in a log',
+    (behind.notice ?? '').includes('could not be brought in'), JSON.stringify(behind))
+  check('and names the file it clashed on',
+    (behind.notice ?? '').includes('notes.json'), String(behind.notice))
+  check('and says where to go next', (behind.notice ?? '').includes('Open Sync'),
+    String(behind.notice))
+
+  const shown = await webJs(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms * ${PACE}));
+    const until = async (f, ms = 8000) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) { const v = f(); if (v) return v; await wait(100); }
+      return null;
+    };
+    document.querySelector('.switcher-trigger')?.click();
+    await wait(400);
+    Array.from(document.querySelectorAll('.popover-item .pi-name'))
+      .find(e => (e.textContent || '').trim() === 'Close project')?.closest('button')?.click();
+    if (!(await until(() => document.querySelector('.project-item')))) return { stage: 'no gate' };
+    document.querySelector('.project-item').click();
+    await until(() => document.querySelector('.episode-row'));
+    await wait(1500);
+    const banner = document.querySelector('.app-error .ae-text')?.textContent ?? null;
+    document.querySelector('.app-error .ae-dismiss')?.click();
+    return { stage: 'ok', banner };
+  })()`)
+  check('and the page says it too, when the project is opened there',
+    (shown.banner ?? '').includes('could not be brought in'), JSON.stringify(shown))
+
+  // Settled their way, so the rest of the run starts from where the remote is.
+  await gitRun(root, ['checkout', '--', '.renpywriter/notes.json'])
+  await webJs(`window.renpyWriter.currentApi().openProject(${JSON.stringify(root)})`)
+  check('once the clash is gone the next open catches up',
+    (await fs.readFile(path.join(root, '.renpywriter', 'notes.json'), 'utf8')).includes('"v":10'))
+
   // Two people changing the same line is the case the whole sync design turns
   // on. Driven through the real panel, because a conflict that renders wrong
   // is a conflict nobody can answer.
@@ -6232,6 +6283,96 @@ app.whenReady().then(async () => {
     check('while the profile itself is gone',
       !(profilesAtEnd.characters ?? []).some((c) => c.name === 'Kept Speaker'),
       JSON.stringify((profilesAtEnd.characters ?? []).map((c) => c.name)))
+  }
+
+  console.log('\n[notes that cannot be read are not written over]')
+  {
+    /*
+     * What happened to a real project, step by step. Quitting mid-save left
+     * characters.json at 0 bytes; the next launch read that as "no
+     * characters"; and a note edit -- or just leaving the window -- wrote the
+     * empty list back over the real file, which then went into a commit.
+     * Four profiles, gone, with nothing on screen at any point.
+     */
+    const refDir = path.join(root, '.renpywriter')
+    const charactersFile = path.join(refDir, 'characters.json')
+    const files = ['characters', 'locations', 'notes']
+    const stamps = async () => {
+      const out = {}
+      for (const f of files) out[f] = (await fs.stat(path.join(refDir, f + '.json'))).mtimeMs
+      return out
+    }
+    const reopen = () => js(`(async () => {${UNTIL}
+      document.querySelector('.app-error .ae-dismiss')?.click();
+      document.querySelector('.switcher-trigger')?.click();
+      await wait(400);
+      Array.from(document.querySelectorAll('.popover-item .pi-name'))
+        .find(e => (e.textContent || '').trim() === 'Close project')?.closest('button')?.click();
+      if (!(await until(() => document.querySelector('.project-item')))) return { stage: 'no gate' };
+      document.querySelector('.project-item').click();
+      if (!(await until(() => document.querySelector('.episode-row')))) return { stage: 'did not reopen' };
+      await wait(1500);
+      return { stage: 'ok', banner: document.querySelector('.app-error .ae-text')?.textContent ?? null };
+    })()`)
+    const leaveWindow = () => js(`(async () => {${UNTIL}
+      window.dispatchEvent(new Event('pagehide'));
+      await wait(900);
+      return true;
+    })()`)
+
+    // Nothing waiting to be saved means nothing is written on the way out.
+    await reopen()
+    const quiet = await stamps()
+    await leaveWindow()
+    check('leaving the window with nothing to save writes nothing',
+      JSON.stringify(await stamps()) === JSON.stringify(quiet), 'a notes file was rewritten')
+
+    // The incident, from the top.
+    const good = await fs.readFile(charactersFile, 'utf8')
+    const profiles = JSON.parse(good).characters.length
+    check('the project has profiles to lose', profiles > 0, String(profiles))
+    await fs.writeFile(charactersFile, '')
+
+    const opened = await reopen()
+    check('opening it again says the characters file cannot be read',
+      opened.stage === 'ok' && (opened.banner ?? '').includes('characters.json could not be read'),
+      JSON.stringify(opened))
+    check('and that it is empty, which is what is wrong with it',
+      (opened.banner ?? '').includes('the file is empty'), String(opened.banner))
+    check('and what to do', (opened.banner ?? '').includes('Restore it from git'),
+      String(opened.banner))
+
+    // What wrote the empty list back last time: a note edit, and leaving.
+    const edited = await js(`(async () => {${UNTIL}
+      if (!document.querySelector('.refpanel')) {
+        Array.from(document.querySelectorAll('button'))
+          .find(b => b.textContent === 'Reference')?.click();
+        await until(() => document.querySelector('.refpanel'));
+      }
+      Array.from(document.querySelectorAll('.ref-tabs button'))
+        .find(b => b.textContent === 'Notes')?.click();
+      await wait(300);
+      const add = Array.from(document.querySelectorAll('.ref-actions button'))
+        .find(b => b.textContent === 'Add note');
+      if (!add) return { stage: 'no Add note' };
+      add.click();
+      await wait(2200);
+      window.dispatchEvent(new Event('pagehide'));
+      await wait(900);
+      return { stage: 'ok' };
+    })()`)
+    check('a note can be added while it is broken', edited.stage === 'ok', JSON.stringify(edited))
+    check('and nothing is written over the file that could not be read',
+      (await fs.readFile(charactersFile, 'utf8')) === '',
+      'characters.json was rewritten: ' + (await fs.readFile(charactersFile, 'utf8')).slice(0, 80))
+
+    // Restored, it is all there again.
+    await fs.writeFile(charactersFile, good)
+    const back = await reopen()
+    check('with the file restored the project opens clean',
+      back.stage === 'ok' && !(back.banner ?? '').includes('could not be read'), String(back.banner))
+    const count = await js(`(async () => (await window.api.readReference(${JSON.stringify(root)})).characters.length)()`)
+    check('and every profile is still there', count === profiles, `${count} of ${profiles}`)
   }
 
   console.log(`\n${pass} passed, ${fail} failed`)

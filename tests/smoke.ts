@@ -15,7 +15,11 @@ import { DEFAULT_SETTINGS } from '../src/shared/types'
 import { scanCharacters } from '../src/core/renpy/characters'
 import { contrastRatio, readableOn } from '../src/renderer/src/color'
 import { buildLabeller } from '../src/renderer/src/characterLabel'
-import { readReference, writeReference } from '../src/core/projects/reference'
+import {
+  readReference,
+  writeReference,
+  UnreadableReferenceError
+} from '../src/core/projects/reference'
 import { buildLinkIndex, parseLinks, linkedNames } from '../src/renderer/src/wikiLink'
 import { centreIndex } from '../src/renderer/src/anchor'
 import { shouldWriteReference } from '../src/renderer/src/state/referenceSave'
@@ -448,10 +452,112 @@ async function main() {
   check('other fields survive migration', migrated.characters[0].bio === 'kept')
   check('the legacy field is dropped', migrated.characters[0].varName === undefined)
 
-  await ws.writeText('.renpywriter/notes.json', 'this is not json{{{')
-  const survived = await readReference(ws)
-  check('a corrupt file degrades instead of throwing',
-    survived.notes.length === 0 && survived.characters.length === 2)
+  /*
+   * A notes file that is there but cannot be read is not an empty one.
+   *
+   * This used to be a check that a corrupt file "degrades instead of
+   * throwing", and that degrading is what emptied four character profiles in
+   * a real project: quitting mid-save left characters.json at 0 bytes, the
+   * next launch read it as "no characters", and the next note edit wrote the
+   * empty list back over the real file and into a commit. Refusing is the fix.
+   */
+  console.log('\n[reference: a file that cannot be read is not an empty one]')
+  {
+    const refuses = async (): Promise<UnreadableReferenceError | null> => {
+      try {
+        await readReference(ws)
+        return null
+      } catch (e) {
+        return e instanceof UnreadableReferenceError ? e : null
+      }
+    }
+
+    await ws.writeText('.renpywriter/notes.json', 'this is not json{{{')
+    const corrupt = await refuses()
+    check('a corrupt file is refused, not read as empty', corrupt !== null)
+    check('and the refusal names the file',
+      (corrupt?.message ?? '').includes('.renpywriter/notes.json'), String(corrupt?.message))
+    check('and says what is wrong with it',
+      (corrupt?.message ?? '').includes('not valid JSON'), String(corrupt?.message))
+    check('and what to do about it',
+      (corrupt?.message ?? '').includes('Restore it from git'), String(corrupt?.message))
+
+    // The incident exactly: a characters file left at 0 bytes.
+    const good = await ws.readText('.renpywriter/characters.json')
+    await ws.writeText('.renpywriter/characters.json', '')
+    await ws.writeText('.renpywriter/notes.json', JSON.stringify({ version: 1, notes: [] }))
+    const emptied = await refuses()
+    check('a characters file left at 0 bytes is refused',
+      emptied !== null && emptied.file === '.renpywriter/characters.json', String(emptied?.message))
+    check('and called empty, which is the word for what happened',
+      (emptied?.message ?? '').includes('the file is empty'), String(emptied?.message))
+
+    // Put it back for the sections after this one.
+    await ws.writeText('.renpywriter/characters.json', good)
+    check('with the file restored it reads again',
+      (await refuses()) === null && (await readReference(ws)).characters.length === 2)
+
+    // A file that is simply not there is still a project with no notes yet.
+    const fresh = await fs.mkdtemp(path.join((await import('node:os')).tmpdir(), 'rpw-noref-'))
+    const blank = await readReference(new LocalWorkspaceProvider(fresh))
+    check('missing files still read as empty, which is what they are',
+      blank.characters.length === 0 && blank.notes.length === 0)
+    await fs.rm(fresh, { recursive: true, force: true })
+  }
+
+  console.log('\n[reference: a save touches only what changed]')
+  {
+    // Counting what reaches the disk, per file.
+    const written: string[] = []
+    const counting = Object.create(ws) as typeof ws
+    counting.writeText = async (rel: string, content: string) => {
+      written.push(rel)
+      return ws.writeText(rel, content)
+    }
+
+    // Once in the app's own format first: files written by hand earlier in
+    // this run are laid out differently, and are rightly rewritten once.
+    const current = await readReference(ws)
+    await writeReference(ws, current)
+    await writeReference(counting, current)
+    check('saving what is already on disk writes nothing', written.length === 0,
+      JSON.stringify(written))
+
+    written.length = 0
+    await writeReference(counting, {
+      ...current,
+      notes: [...current.notes, { id: 'n9', title: 'New', body: 'x', updatedAt: '2026-09-26T00:00:00.000Z' }]
+    })
+    check('a note edit writes notes.json and nothing else',
+      JSON.stringify(written) === JSON.stringify(['.renpywriter/notes.json']), JSON.stringify(written))
+    check('so the characters are not rewritten from memory on the way',
+      !written.includes('.renpywriter/characters.json'))
+    // And back.
+    await writeReference(ws, current)
+  }
+
+  console.log('\n[a file is never left half written]')
+  {
+    const dir = await fs.mkdtemp(path.join((await import('node:os')).tmpdir(), 'rpw-atomic-'))
+    const local = new LocalWorkspaceProvider(dir)
+    await local.writeText('game/a.rpy', 'first version')
+    await local.writeText('game/a.rpy', 'second version')
+    check('a write replaces the file whole', (await local.readText('game/a.rpy')) === 'second version')
+    const leftovers = (await fs.readdir(path.join(dir, 'game'))).filter((f) => f.endsWith('.tmp'))
+    check('and leaves nothing of itself behind', leftovers.length === 0, JSON.stringify(leftovers))
+
+    // Two saves of one file at once, which an autosave and a flush can be.
+    // Written in place they could interleave; renamed into place, the file is
+    // exactly one of them, whole.
+    const long = (c: string): string => c.repeat(200000)
+    await Promise.all([local.writeText('game/b.rpy', long('a')), local.writeText('game/b.rpy', long('b'))])
+    const b = await local.readText('game/b.rpy')
+    check('two saves at once leave one of them, whole',
+      b === long('a') || b === long('b'), `${b.length} characters, starting ${b.slice(0, 3)}`)
+    check('and no temp files',
+      (await fs.readdir(path.join(dir, 'game'))).every((f) => !f.endsWith('.tmp')))
+    await fs.rm(dir, { recursive: true, force: true })
+  }
 
   console.log('\n[reference: wiki links]')
   const index = buildLinkIndex({

@@ -24,6 +24,13 @@ export interface OpenedProject {
    * leads without the file having been opened.
    */
   parsedEpisodes: Record<string, ParsedEpisode>
+  /**
+   * Why what was opened may be behind, when it may be: a server brings its
+   * copy up to date before opening, and when that fails -- a clash with
+   * something changed on the server, no network -- it opens what it has.
+   * That is the right call, but only if somebody is told.
+   */
+  syncNotice?: string
 }
 
 /**

@@ -183,7 +183,7 @@ async function loadProject(host: HostServices, renpyRoot: string): Promise<Opene
 
   // A host that shares a checkout brings it up to date first; one that does
   // not implement this is somebody's own machine, where syncing is their call.
-  await host.beforeOpenProject?.(renpyRoot)
+  const behind = await host.beforeOpenProject?.(renpyRoot)
 
   const provider = ws(renpyRoot)
   let sidecar = await readSidecarProject(provider)
@@ -235,7 +235,8 @@ async function loadProject(host: HostServices, renpyRoot: string): Promise<Opene
     episodes: withMachineRenders(sidecar.episodes, machine).sort((a, b) => a.order - b.order),
     beats,
     unregisteredFiles: onDisk.filter((f) => !registered.has(f)),
-    parsedEpisodes
+    parsedEpisodes,
+    ...(behind ? { syncNotice: behind } : {})
   }
 }
 
@@ -289,8 +290,12 @@ export interface HostServices {
   /**
    * Anything the host wants done before a project is read -- a server pulls,
    * so a phone is not shown a script somebody replaced an hour ago.
+   *
+   * Returns why that did not happen, when it did not. The project opens
+   * either way, and the reason goes to the screen rather than to a log file
+   * nobody at the page can read.
    */
-  beforeOpenProject?(renpyRoot: string): Promise<void>
+  beforeOpenProject?(renpyRoot: string): Promise<string | null | void>
 }
 
 export function registerHandlers(register: Register, host: HostServices): void {

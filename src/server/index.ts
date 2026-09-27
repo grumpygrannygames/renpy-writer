@@ -157,7 +157,18 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
      */
     async beforeOpenProject(renpyRoot: string) {
       const result = await gitPull(renpyRoot)
-      if (!result.ok) console.log(`[project ${renpyRoot}] ${result.message}`)
+      if (result.ok) return null
+      console.log(`[project ${renpyRoot}] ${result.message}`)
+      /*
+       * Said to the page as well. This used to go to the log alone, so a pull
+       * refused over a clash in one notes file opened yesterday's script with
+       * nothing to say it was yesterday's -- and "no changes" in Sync, since
+       * nothing had been brought in to show.
+       */
+      return (
+        'This is the project as the server last had it: the latest changes could not be ' +
+        `brought in. ${result.message} Open Sync to sort it out.`
+      )
     },
 
     // No builtinEncoder: that one is Chromium's, and this is plain Node.
