@@ -3,6 +3,7 @@ import * as path from 'node:path'
 import type { ProjectListing } from '@shared/api'
 import type { ProjectRef } from '@shared/types'
 import type { HostServices } from '@core/handlers'
+import { oneAtATime, writeFileAtomic } from '@core/atomicFile'
 
 /**
  * The server's list of known projects.
@@ -48,10 +49,9 @@ export function createFileRegistry(dataDir: string): HostServices['registry'] {
   const write = async (projects: ProjectRef[]): Promise<void> => {
     await fs.mkdir(path.dirname(file), { recursive: true })
     await fs.copyFile(file, backup).catch(() => {})
-    const temp = file + '.tmp'
-    await fs.writeFile(temp, JSON.stringify({ version: 1, projects }, null, 2), 'utf8')
-    await fs.rename(temp, file)
+    await writeFileAtomic(file, JSON.stringify({ version: 1, projects }, null, 2))
   }
+  const inTurn = oneAtATime()
 
   const guard = (listing: ProjectListing): void => {
     if (listing.error && !listing.recovered) {
@@ -61,20 +61,22 @@ export function createFileRegistry(dataDir: string): HostServices['registry'] {
 
   return {
     read,
-    async upsert(ref) {
-      const current = await read()
-      guard(current)
-      const next = current.projects.filter((p) => p.id !== ref.id)
-      next.unshift(ref)
-      await write(next)
-      return next
-    },
-    async remove(id) {
-      const current = await read()
-      guard(current)
-      const next = current.projects.filter((p) => p.id !== id)
-      await write(next)
-      return next
-    }
+    upsert: (ref) =>
+      inTurn(async () => {
+        const current = await read()
+        guard(current)
+        const next = current.projects.filter((p) => p.id !== ref.id)
+        next.unshift(ref)
+        await write(next)
+        return next
+      }),
+    remove: (id) =>
+      inTurn(async () => {
+        const current = await read()
+        guard(current)
+        const next = current.projects.filter((p) => p.id !== id)
+        await write(next)
+        return next
+      })
   }
 }

@@ -50,6 +50,8 @@ import { commit, fetchStatus, pull, push, readStatus, resolvePull } from '../src
 import { commitMessageFor } from '../src/shared/commitMessage'
 import { createUserStore } from '../src/server/users'
 import { createSessionStore } from '../src/server/sessions'
+import { createFileRegistry } from '../src/server/registry'
+import { oneAtATime, writeFileAtomic } from '../src/core/atomicFile'
 import {
   clearedCookie,
   createAttemptLimiter,
@@ -3873,6 +3875,56 @@ async function main() {
     const missing = await cliRunner('definitely-not-a-real-command-xyz')('hi')
     check('a missing command is reported as not installed', !missing.ok &&
       missing.error!.includes('Install it'), String(missing.error))
+  }
+
+  console.log('\n[writes that overlap]')
+  {
+    /*
+     * "Save failed: ENOENT ... rename projects.json.tmp -> projects.json".
+     * Every save reopens the project, every opening updates the project list,
+     * and every write of that list went through one shared projects.json.tmp.
+     * Two saves close together: the first renamed the file away, the second
+     * found nothing to rename.
+     */
+    const os = await import('node:os')
+    const dir = path.join(os.tmpdir(), 'rpw-overlap-' + Date.now())
+    await fs.mkdir(dir, { recursive: true })
+
+    const target = path.join(dir, 'list.json')
+    const results = await Promise.allSettled(
+      Array.from({ length: 25 }, (_, i) => writeFileAtomic(target, JSON.stringify({ i }))))
+    const failed = results.filter((r) => r.status === 'rejected')
+    check('many writes of one file at once all succeed', failed.length === 0,
+      failed.map((r) => String((r as PromiseRejectedResult).reason)).slice(0, 2).join(' | '))
+    const final = JSON.parse(await fs.readFile(target, 'utf8'))
+    check('and leave one of them whole', typeof final.i === 'number', JSON.stringify(final))
+    const left = (await fs.readdir(dir)).filter((f) => f.endsWith('.tmp'))
+    check('with nothing left lying beside it', left.length === 0, left.join(', '))
+
+    // Whole is not enough: two updates that both read before either writes
+    // lose one of them. The list has to take turns.
+    const registry = createFileRegistry(dir)
+    await Promise.all(Array.from({ length: 12 }, (_, i) => registry.upsert({
+      id: 'p' + i, name: 'Project ' + i, renpyRoot: '/r/' + i, lastOpenedAt: new Date().toISOString()
+    })))
+    const listed = await registry.read()
+    check('twelve projects opened at once are all still on the list', listed.projects.length === 12,
+      String(listed.projects.length))
+
+    const sessions = createSessionStore(dir)
+    const made = await Promise.all(Array.from({ length: 8 }, (_, i) => sessions.create('u' + i)))
+    const kept = await Promise.all(made.map((m) => sessions.get(m.id)))
+    check('eight sign-ins at once are all remembered', kept.every(Boolean),
+      String(kept.filter(Boolean).length))
+
+    const inTurn = oneAtATime()
+    const order: number[] = []
+    const failing = inTurn(async () => { throw new Error('first one fails') })
+    const after = inTurn(async () => { order.push(2); return 'ran' })
+    check('a step that fails does not stop the next one',
+      (await failing.catch((e) => e.message)) === 'first one fails' && (await after) === 'ran')
+
+    await fs.rm(dir, { recursive: true, force: true })
   }
 
   console.log(`\n${pass} passed, ${fail} failed`)

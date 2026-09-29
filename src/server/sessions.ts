@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import { randomBytes } from 'node:crypto'
+import { oneAtATime, writeFileAtomic } from '@core/atomicFile'
 
 /**
  * Signed-in sessions.
@@ -44,14 +45,10 @@ export function createSessionStore(dataDir: string): SessionStore {
   }
 
   const write = async (sessions: Session[]): Promise<void> => {
-    await fs.mkdir(path.dirname(file), { recursive: true })
-    const temp = file + '.tmp'
-    await fs.writeFile(temp, JSON.stringify({ version: 1, sessions }, null, 2), {
-      encoding: 'utf8',
-      mode: 0o600
-    })
-    await fs.rename(temp, file)
+    await writeFileAtomic(file, JSON.stringify({ version: 1, sessions }, null, 2), { mode: 0o600 })
   }
+  // Two sign-ins at once must not each write the list without the other.
+  const inTurn = oneAtATime()
 
   return {
     async create(userId) {
@@ -61,7 +58,7 @@ export function createSessionStore(dataDir: string): SessionStore {
         createdAt: Date.now(),
         expiresAt: Date.now() + LIFETIME_MS
       }
-      await write([...(await read()), session])
+      await inTurn(async () => write([...(await read()), session]))
       return session
     },
 
@@ -71,11 +68,11 @@ export function createSessionStore(dataDir: string): SessionStore {
     },
 
     async destroy(id) {
-      await write((await read()).filter((s) => s.id !== id))
+      await inTurn(async () => write((await read()).filter((s) => s.id !== id)))
     },
 
     async destroyAllFor(userId) {
-      await write((await read()).filter((s) => s.userId !== userId))
+      await inTurn(async () => write((await read()).filter((s) => s.userId !== userId)))
     }
   }
 }

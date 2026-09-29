@@ -907,9 +907,19 @@ export const useStore = create<AppState>((set, get) => ({
         parsed: { ...s.parsed, [fileName]: parsed }
       }))
 
-      // Labels may have changed, so refresh the outline from the sidecar.
-      const refreshed = await api.openProject(root)
-      set({ opened: refreshed, parsed: { ...refreshed.parsedEpisodes, [fileName]: parsed } })
+      // Labels may have changed, so refresh the outline from the sidecar. The
+      // script is safely written by now, so a failure here is not a failed
+      // save and must not be reported as one.
+      try {
+        const refreshed = await api.openProject(root)
+        set({ opened: refreshed, parsed: { ...refreshed.parsedEpisodes, [fileName]: parsed } })
+      } catch (e) {
+        set({
+          error:
+            `${fileName} was saved, but the outline could not be brought up to date with it: ` +
+            `${message(e)} Reopening the project will try again.`
+        })
+      }
     } catch (e) {
       set({ saveError: message(e) })
     } finally {

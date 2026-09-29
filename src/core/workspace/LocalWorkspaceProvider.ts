@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import type { DirEntry } from '@shared/types'
 import type { WorkspaceProvider } from './WorkspaceProvider'
+import { writeFileAtomic } from '../atomicFile'
 
 export class LocalWorkspaceProvider implements WorkspaceProvider {
   constructor(readonly root: string) {}
@@ -35,17 +36,7 @@ export class LocalWorkspaceProvider implements WorkspaceProvider {
    * rather than in a temp folder, because a rename across drives is a copy.
    */
   async writeText(rel: string, content: string): Promise<void> {
-    const target = this.abs(rel)
-    await fs.mkdir(path.dirname(target), { recursive: true })
-    // Unique, because two saves of one file can overlap.
-    const temp = `${target}.${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`
-    try {
-      await fs.writeFile(temp, content, 'utf8')
-      await renameOver(temp, target)
-    } catch (e) {
-      await fs.rm(temp, { force: true }).catch(() => {})
-      throw e
-    }
+    await writeFileAtomic(this.abs(rel), content)
   }
 
   async exists(rel: string): Promise<boolean> {
@@ -68,27 +59,5 @@ export class LocalWorkspaceProvider implements WorkspaceProvider {
 
   async remove(rel: string): Promise<void> {
     await fs.rm(this.abs(rel), { force: true })
-  }
-}
-
-/**
- * Rename over an existing file, riding out Windows holding it for a moment.
- *
- * On Windows a rename onto a file fails while anything else has that file
- * open -- a virus scanner reading what was just written, the git index, an
- * editor -- and those holds last milliseconds. Giving up at the first refusal
- * would turn a safe write into a failed one, so it tries a few more times.
- */
-async function renameOver(from: string, to: string): Promise<void> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await fs.rename(from, to)
-      return
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code
-      const held = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES'
-      if (!held || attempt >= 6) throw e
-      await new Promise((r) => setTimeout(r, 20 * 2 ** attempt))
-    }
   }
 }

@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import type { Episode, ProjectSettings, RenderEncoder } from '@shared/types'
+import { oneAtATime, writeFileAtomic } from './atomicFile'
 
 /**
  * Settings that belong to this computer rather than to the project.
@@ -52,26 +53,27 @@ async function readAll(): Promise<MachineFile> {
 }
 
 async function writeAll(file: MachineFile): Promise<void> {
-  const target = machinePath()
-  await fs.mkdir(path.dirname(target), { recursive: true })
-  const temp = target + '.tmp'
-  await fs.writeFile(temp, JSON.stringify(file, null, 2) + '\n', 'utf8')
-  await fs.rename(temp, target)
+  await writeFileAtomic(machinePath(), JSON.stringify(file, null, 2) + '\n')
 }
+
+/** Updates read the file and write it back, so they take turns. */
+const inTurn = oneAtATime()
 
 export async function readMachineProject(projectId: string): Promise<MachineProject> {
   return (await readAll()).projects[projectId] ?? {}
 }
 
-export async function updateMachineProject(
+export function updateMachineProject(
   projectId: string,
   patch: (current: MachineProject) => MachineProject
 ): Promise<MachineProject> {
-  const all = await readAll()
-  const next = patch(all.projects[projectId] ?? {})
-  all.projects[projectId] = next
-  await writeAll(all)
-  return next
+  return inTurn(async () => {
+    const all = await readAll()
+    const next = patch(all.projects[projectId] ?? {})
+    all.projects[projectId] = next
+    await writeAll(all)
+    return next
+  })
 }
 
 /** Fold this machine's overrides into the settings the app works with. */

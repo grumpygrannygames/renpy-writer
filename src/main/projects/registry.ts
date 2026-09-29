@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import { app } from 'electron'
 import type { ProjectRef } from '@shared/types'
+import { oneAtATime, writeFileAtomic } from '@core/atomicFile'
 
 /**
  * The list of known projects lives in userData, not in any game folder, so
@@ -133,10 +134,15 @@ export async function writeRegistry(projects: ProjectRef[]): Promise<void> {
     // No previous file, or it cannot be copied; the write below still stands.
   }
 
-  const temp = file + '.tmp'
-  await fs.writeFile(temp, JSON.stringify({ version: 1, projects }, null, 2), 'utf8')
-  await fs.rename(temp, file)
+  await writeFileAtomic(file, JSON.stringify({ version: 1, projects }, null, 2))
 }
+
+/**
+ * Every opening of a project updates this list, and a script save reopens the
+ * project to refresh the outline -- so two saves close together update it at
+ * the same time. One at a time, so neither loses the other's change.
+ */
+const inTurn = oneAtATime()
 
 /**
  * Add or update one project.
@@ -145,7 +151,11 @@ export async function writeRegistry(projects: ProjectRef[]): Promise<void> {
  * list with one entry in it: that would turn a temporary read failure into the
  * permanent loss of every other project.
  */
-export async function upsertProjectRef(ref: ProjectRef): Promise<ProjectRef[]> {
+export function upsertProjectRef(ref: ProjectRef): Promise<ProjectRef[]> {
+  return inTurn(() => upsertNow(ref))
+}
+
+async function upsertNow(ref: ProjectRef): Promise<ProjectRef[]> {
   const current = await readRegistryDetailed()
   if (current.error && !current.recovered) {
     throw new Error(
@@ -160,7 +170,11 @@ export async function upsertProjectRef(ref: ProjectRef): Promise<ProjectRef[]> {
   return next
 }
 
-export async function removeProjectRef(id: string): Promise<ProjectRef[]> {
+export function removeProjectRef(id: string): Promise<ProjectRef[]> {
+  return inTurn(() => removeNow(id))
+}
+
+async function removeNow(id: string): Promise<ProjectRef[]> {
   const current = await readRegistryDetailed()
   if (current.error && !current.recovered) {
     throw new Error(`${current.error} The file is at ${current.path}.`)

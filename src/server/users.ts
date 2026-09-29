@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import { randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto'
 import { promisify } from 'node:util'
+import { oneAtATime, writeFileAtomic } from '@core/atomicFile'
 
 const derive = promisify(scrypt) as (
   password: string,
@@ -81,15 +82,11 @@ export function createUserStore(dataDir: string): UserStore {
   }
 
   const write = async (users: StoredUser[]): Promise<void> => {
-    await fs.mkdir(path.dirname(file), { recursive: true })
-    const temp = file + '.tmp'
     // 0600: nobody else on the machine needs to read password hashes.
-    await fs.writeFile(temp, JSON.stringify({ version: 1, users }, null, 2), {
-      encoding: 'utf8',
-      mode: 0o600
-    })
-    await fs.rename(temp, file)
+    await writeFileAtomic(file, JSON.stringify({ version: 1, users }, null, 2), { mode: 0o600 })
   }
+  // Changes read the list and write it back, so they take turns.
+  const inTurn = oneAtATime()
 
   return {
     async count() {
@@ -100,7 +97,7 @@ export function createUserStore(dataDir: string): UserStore {
       return (await read()).map(publicUser)
     },
 
-    async create({ username, password, role, email }) {
+    create: ({ username, password, role, email }) => inTurn(async () => {
       const name = username.trim().toLowerCase()
       if (!name) throw new Error('A username is required.')
       if (password.length < 12) {
@@ -124,7 +121,7 @@ export function createUserStore(dataDir: string): UserStore {
       }
       await write([...users, stored])
       return publicUser(stored)
-    },
+    }),
 
     async verify(username, password) {
       const name = username.trim().toLowerCase()
@@ -148,7 +145,7 @@ export function createUserStore(dataDir: string): UserStore {
       return found ? publicUser(found) : null
     },
 
-    async setPassword(id, password) {
+    setPassword: (id, password) => inTurn(async () => {
       if (password.length < 12) {
         throw new Error('Use at least 12 characters. Length matters more than punctuation.')
       }
@@ -159,9 +156,9 @@ export function createUserStore(dataDir: string): UserStore {
       found.salt = salt.toString('base64')
       found.hash = (await hash(password, salt)).toString('base64')
       await write(users)
-    },
+    }),
 
-    async remove(id) {
+    remove: (id) => inTurn(async () => {
       const users = await read()
       const remaining = users.filter((u) => u.id !== id)
       if (remaining.length === users.length) throw new Error('No such account.')
@@ -169,6 +166,6 @@ export function createUserStore(dataDir: string): UserStore {
         throw new Error('That is the only administrator. Make another one first.')
       }
       await write(remaining)
-    }
+    })
   }
 }
