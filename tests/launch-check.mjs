@@ -6595,6 +6595,80 @@ app.whenReady().then(async () => {
       /label ON_THE_TRAIN\s*:/.test(chapter1) && !(await labelsOf()).includes('ON_THE_TRAIN'),
       'not moved')
 
+    // A note on a beat, which a phone could only write on the plot board it
+    // cannot reach.
+    const noted = await js(`(async () => {${UNTIL}
+      const set = (el, value) => {
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+          .call(el, value);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      const rowOf = () => Array.from(document.querySelectorAll('.episode-row'))
+        .find(e => e.textContent.includes('chapter_2'))?.parentElement
+        ?.querySelector('.beat-row');
+      const row = rowOf();
+      if (!row) return { stage: 'no beat' };
+      const title = row.querySelector('.title')?.textContent;
+      row.querySelector('.beat-more').click();
+      await until(() => document.querySelector('.ctx-item'));
+      const offered = Array.from(document.querySelectorAll('.ctx-item')).map(b => b.textContent);
+      Array.from(document.querySelectorAll('.ctx-item'))
+        .find(b => b.textContent === 'Add a note…')?.click();
+      const area = await until(() => document.querySelector('.beat-note-modal textarea'));
+      if (!area) return { stage: 'no note editor', offered };
+      set(area, 'She lies about the letter here.');
+      await wait(150);
+      const shot = document.querySelector('.beat-note-modal')?.getBoundingClientRect();
+      const fits = !!shot && shot.left >= 0 && shot.right <= innerWidth;
+      document.querySelector('.beat-note-modal button.primary').click();
+      await until(() => rowOf()?.nextElementSibling?.classList.contains('beat-note'));
+      await wait(300);
+      const shown = rowOf()?.nextElementSibling;
+      return {
+        stage: 'ok', title, offered, fits,
+        shown: shown?.classList.contains('beat-note') ? shown.textContent : null,
+        visible: shown ? getComputedStyle(shown).display !== 'none' : false
+      };
+    })()`)
+    const outlineFile = path.join(root, '.renpywriter', 'outline.json')
+    // Every note in the outline, since an earlier section leaves one of its own.
+    const storedNote = () => fs.readFile(outlineFile, 'utf8').then((t) =>
+      JSON.parse(t).beats.map((b) => b.description).filter(Boolean).join(' | ') || null)
+    check('a beat\'s menu offers to add a note',
+      (noted.offered ?? []).includes('Add a note…'), JSON.stringify(noted.offered))
+    check('the note editor fits on a phone', noted.fits === true, JSON.stringify(noted))
+    check('the note is kept with the outline',
+      ((await storedNote()) ?? '').includes('She lies about the letter here.'), String(await storedNote()))
+    check('and shown under its beat', noted.stage === 'ok' && noted.visible === true &&
+      noted.shown === 'She lies about the letter here.', JSON.stringify(noted))
+    await shoot(win.webContents, 'phone-beat-note.png')
+
+    const edited = await js(`(async () => {${UNTIL}
+      const set = (el, value) => {
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+          .call(el, value);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      document.querySelector('.beat-note')?.click();
+      const area = await until(() => document.querySelector('.beat-note-modal textarea'));
+      if (!area) return { stage: 'tapping the note did not open it' };
+      const was = area.value;
+      set(area, 'She tells the truth about the letter.');
+      await wait(150);
+      return { stage: 'ok', was };
+    })()`)
+    await shoot(win.webContents, 'phone-beat-note-editor.png')
+    edited.shown = await js(`(async () => {${UNTIL}
+      document.querySelector('.beat-note-modal button.primary')?.click();
+      await wait(1000);
+      return document.querySelector('.beat-note')?.textContent ?? null;
+    })()`)
+    check('tapping a note opens it, with what it says', edited.stage === 'ok' &&
+      edited.was === 'She lies about the letter here.', JSON.stringify(edited))
+    check('and an edit is kept', ((await storedNote()) ?? '').includes('She tells the truth about the letter.') &&
+      !((await storedNote()) ?? '').includes('She lies about the letter here.') &&
+      edited.shown === 'She tells the truth about the letter.', JSON.stringify(edited))
+
     /*
      * A move rewrites the file and reads it back into the open tab, and it
      * used to do that without saving first -- so a sentence typed a moment

@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import ContextMenu, { type MenuItem } from './ContextMenu'
 import type { PassMode } from '@shared/api'
 import type { LabelEndKind } from '@shared/types'
 import { useStore } from '../state/store'
 import { beatName } from '../beatName'
 import ProjectSwitcher from './ProjectSwitcher'
+import BeatNoteDialog from './BeatNoteDialog'
 
 const END_KIND_LABEL: Record<LabelEndKind, string> = {
   jump: '',
@@ -71,6 +72,8 @@ export default function Sidebar({
   /** The episode a beat is being named for, and what has been typed so far. */
   const [adding, setAdding] = useState<string | null>(null)
   const [draft, setDraft] = useState('')
+  /** The beat whose note is open. */
+  const [noting, setNoting] = useState<{ id: string; title: string; note: string } | null>(null)
 
   if (!opened) return null
   const beats = opened.beats
@@ -113,6 +116,10 @@ export default function Sidebar({
     span: { label: string; startLine: number; endLine: number } | undefined,
     at: { x: number; y: number }
   ): MenuItem[] => {
+    const note: MenuItem = {
+      label: beat.description ? 'Edit the note\u2026' : 'Add a note\u2026',
+      onSelect: () => setNoting({ id: beat.id, title: beat.title, note: beat.description ?? '' })
+    }
     const order = (parsed[ep.fileName]?.labels ?? []).map((s) => s.label)
     const i = span ? order.indexOf(span.label) : -1
     const last = order.length - 1
@@ -140,6 +147,7 @@ export default function Sidebar({
           }
         ]
       : [{ label: 'Not in the script yet, so there is nothing to move', disabled: true, onSelect: () => {} }]
+    moves[0] = { ...moves[0], separated: true }
 
     const passes: MenuItem[] = capabilities.languagePasses
       ? [
@@ -167,7 +175,7 @@ export default function Sidebar({
           }
         ]
       : []
-    return [...moves, ...passes]
+    return [note, ...moves, ...passes]
   }
   const { project, episodes, unregisteredFiles } = opened
 
@@ -322,47 +330,60 @@ export default function Sidebar({
                 const span = beat.label ? spans.find((s) => s.label === beat.label) : undefined
                 const kind = span?.endKind
                 return (
-                  <div
-                    key={beat.id}
-                    className={'beat-row' + (beat.label ? '' : ' unwritten')}
-                    title={beat.label ?? 'Not written yet'}
-                    onContextMenu={(e) => {
-                      e.preventDefault()
-                      const at = { x: e.clientX, y: e.clientY }
-                      setMenu({ ...at, items: beatMenu(ep, beat, span, at) })
-                    }}
-                    onClick={() => {
-                      if (span) onRevealLine(ep.fileName, span.startLine)
-                      else void openEpisode(ep.fileName)
-                      onOpenedInEditor?.()
-                    }}
-                  >
-                    <span
-                      className="dot"
-                      style={{
-                        background: kind ? END_KIND_COLOR[kind] : 'transparent',
-                        border: kind ? 'none' : '1px solid var(--text-faint)'
-                      }}
-                    />
-                    <span className="title">{beatName(beat.title)}</span>
-                    {kind && END_KIND_LABEL[kind] && (
-                      <span className="kind">{END_KIND_LABEL[kind]}</span>
-                    )}
-                    {/* A finger has no right button: the same menu, on a tap. */}
-                    <button
-                      className="beat-more"
-                      title="Move this scene, and more"
-                      aria-label={`What can be done with ${beatName(beat.title)}`}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        const box = e.currentTarget.getBoundingClientRect()
-                        const at = { x: box.left, y: box.bottom + 4 }
+                  <Fragment key={beat.id}>
+                    <div
+                      className={'beat-row' + (beat.label ? '' : ' unwritten')}
+                      title={beat.label ?? 'Not written yet'}
+                      onContextMenu={(e) => {
+                        e.preventDefault()
+                        const at = { x: e.clientX, y: e.clientY }
                         setMenu({ ...at, items: beatMenu(ep, beat, span, at) })
                       }}
+                      onClick={() => {
+                        if (span) onRevealLine(ep.fileName, span.startLine)
+                        else void openEpisode(ep.fileName)
+                        onOpenedInEditor?.()
+                      }}
                     >
-                      &hellip;
-                    </button>
-                  </div>
+                      <span
+                        className="dot"
+                        style={{
+                          background: kind ? END_KIND_COLOR[kind] : 'transparent',
+                          border: kind ? 'none' : '1px solid var(--text-faint)'
+                        }}
+                      />
+                      <span className="title">{beatName(beat.title)}</span>
+                      {kind && END_KIND_LABEL[kind] && (
+                        <span className="kind">{END_KIND_LABEL[kind]}</span>
+                      )}
+                      {/* A finger has no right button: the same menu, on a tap. */}
+                      <button
+                        className="beat-more"
+                        title="Move this scene, and more"
+                        aria-label={`What can be done with ${beatName(beat.title)}`}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          const box = e.currentTarget.getBoundingClientRect()
+                          const at = { x: box.left, y: box.bottom + 4 }
+                          setMenu({ ...at, items: beatMenu(ep, beat, span, at) })
+                        }}
+                      >
+                        &hellip;
+                      </button>
+                    </div>
+                    {/* Under its beat on a phone, where the plot board's cards
+                        that show notes cannot be reached. Tapping it edits it. */}
+                    {beat.description && (
+                      <div
+                        className="beat-note"
+                        onClick={() =>
+                          setNoting({ id: beat.id, title: beat.title, note: beat.description ?? '' })
+                        }
+                      >
+                        {beat.description}
+                      </div>
+                    )}
+                  </Fragment>
                 )
               })}
 
@@ -430,6 +451,14 @@ export default function Sidebar({
       </div>
       {menu && (
         <ContextMenu at={menu} items={menu.items} onClose={() => setMenu(null)} />
+      )}
+      {noting && (
+        <BeatNoteDialog
+          beatId={noting.id}
+          title={noting.title}
+          note={noting.note}
+          onClose={() => setNoting(null)}
+        />
       )}
     </aside>
   )

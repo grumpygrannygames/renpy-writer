@@ -236,6 +236,23 @@ label.check input {
   font-style: italic;
   color: var(--text-faint);
 }
+/* A beat's note in the outline: only in the phone layout, where the plot
+   board's cards are out of reach. On a desktop the board shows them. */
+.beat-note {
+  display: none;
+}
+.app.phone .beat-note {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: -2px 14px 6px 45px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-faint);
+  white-space: pre-line;
+  cursor: pointer;
+}
 
 .empty-note {
   padding: 14px;
