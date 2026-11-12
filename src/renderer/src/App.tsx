@@ -8,6 +8,7 @@ import CodeView from './components/CodeView'
 import NewEpisodeDialog from './components/NewEpisodeDialog'
 import SettingsDialog from './components/SettingsDialog'
 import AddProjectForm from './components/AddProjectForm'
+import CloneProjectForm from './components/CloneProjectForm'
 import WriterView from './components/WriterView'
 import ReferencePanel from './components/ReferencePanel'
 import CharacterEditor from './components/CharacterEditor'
@@ -516,18 +517,25 @@ export default function App() {
         <div className="modal-backdrop" onClick={() => setShowAddProject(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h2>Add project</h2>
-            <AddProjectForm
-              busy={false}
-              onCancel={() => setShowAddProject(false)}
-              onCreate={async (input) => {
-                await useStore.getState().createProject(input)
-                setShowAddProject(false)
-              }}
-              onOpenExisting={async (root) => {
-                await useStore.getState().openProject(root)
-                setShowAddProject(false)
-              }}
-            />
+            {capabilities.cloneProjects ? (
+              <CloneProjectForm
+                onCancel={() => setShowAddProject(false)}
+                onDone={() => setShowAddProject(false)}
+              />
+            ) : (
+              <AddProjectForm
+                busy={false}
+                onCancel={() => setShowAddProject(false)}
+                onCreate={async (input) => {
+                  await useStore.getState().createProject(input)
+                  setShowAddProject(false)
+                }}
+                onOpenExisting={async (root) => {
+                  await useStore.getState().openProject(root)
+                  setShowAddProject(false)
+                }}
+              />
+            )}
           </div>
         </div>
       )}

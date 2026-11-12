@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Ren\'Py Writer</string>
+    <string name="title_activity_main">Ren\'Py Writer</string>
+    <string name="package_name">com.grumpygranny.renpywriter</string>
+    <string name="custom_url_scheme">com.grumpygranny.renpywriter</string>
+</resources>

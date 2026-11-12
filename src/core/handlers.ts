@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import * as nodePath from 'node:path'
 import type {
+  CloneProjectInput,
   HostCapabilities,
   ProjectListing,
   CreateEpisodeInput,
@@ -42,12 +44,15 @@ import {
   type BuiltInEncode
 } from './renders'
 import {
+  cloneTextOnly,
   commit as gitCommit,
   fetchStatus as gitFetchStatus,
   pull as gitPull,
   push as gitPush,
   readStatus,
-  resolvePull as gitResolvePull
+  resolvePull as gitResolvePull,
+  withoutCredentials,
+  withToken
 } from '@core/git'
 import type { Decision } from '@core/git/conflicts'
 import { cliRunner } from '@core/passes/runner'
@@ -298,6 +303,8 @@ export interface HostServices {
    * nobody at the page can read.
    */
   beforeOpenProject?(renpyRoot: string): Promise<string | null | void>
+  /** Where projects copied from a remote are kept, on a host that copies them. */
+  projectsDir?: string
 }
 
 export function registerHandlers(register: Register, host: HostServices): void {
@@ -327,6 +334,54 @@ export function registerHandlers(register: Register, host: HostServices): void {
   })
 
   register(IPC.openProject, (root: string) => loadProject(host, root))
+
+  /*
+   * A phone has no folder of games to point at, so its projects are copied
+   * down from where they already live -- without the artwork, as the server's
+   * copy is. The project has to exist already: the .renpywriter folder is made
+   * on a desktop, committed and sent, which is also how the server gets one.
+   */
+  register(IPC.cloneProject, async (input: CloneProjectInput) => {
+    if (!host.capabilities.cloneProjects || !host.projectsDir) {
+      throw new Error('Projects cannot be copied from a remote here.')
+    }
+    let remote: URL
+    try {
+      remote = new URL(input.url.trim())
+    } catch {
+      throw new Error('That is not a web address. Copy it from the repository page, starting https://')
+    }
+    if (remote.protocol !== 'https:') {
+      throw new Error('Only https:// addresses can be used here.')
+    }
+    const name = input.authorName.trim()
+    const email = input.authorEmail.trim()
+    if (!name || !email) throw new Error('Your name and email are needed: every change sent says who made it.')
+
+    const repo = remote.pathname.replace(/\.git$/i, '').split('/').filter(Boolean).pop() ?? 'project'
+    const dest = nodePath.join(host.projectsDir, toFileSlug(repo) || 'project')
+
+    // Already copied: the copy is reused, and only needs to be on the list.
+    let existing = await readSidecarProject(ws(dest)).catch(() => null)
+    if (!existing) {
+      const cloned = await cloneTextOnly(withToken(remote.toString(), input.token.trim()), dest, {
+        name,
+        email
+      })
+      if (!cloned.ok) {
+        throw new Error([cloned.message, cloned.detail].filter(Boolean).join(' '))
+      }
+      existing = await readSidecarProject(ws(dest)).catch(() => null)
+      if (!existing) {
+        throw new Error(
+          `${withoutCredentials(remote.toString())} has no Ren'Py Writer project in it: no ` +
+            '.renpywriter folder. Open the game once in Ren\u2019Py Writer on a computer, then ' +
+            'Save and send, and copy it here after that.'
+        )
+      }
+    }
+    return loadProject(host, dest)
+  })
 
   register(IPC.removeProject, (id: string) => {
     if (!host.capabilities.manageProjects) {

@@ -128,6 +128,15 @@ work than the rest of this and is meant for people who want it badly.
 
 See **[docs/web.md](docs/web.md)**.
 
+### On an Android phone, with the files on the phone
+
+An Android app that works like the web version but needs no server: the
+project lives on the phone, works offline, and syncs with the same Save and
+send. Projects are copied from GitLab or GitHub without their artwork, so even
+a large game is a small download.
+
+See **[docs/android.md](docs/android.md)**.
+
 ## Contributing
 
 **Changes are welcome.** If you have fixed something, or added something that

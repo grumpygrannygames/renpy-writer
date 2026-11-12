@@ -9,16 +9,20 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && electron-vite build",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.android.json",
     "start": "electron-vite preview",
     "test": "esbuild tests/smoke.ts --bundle --platform=node --format=esm --alias:@shared=./src/shared --alias:@core=./src/core --outfile=node_modules/.cache/smoke.mjs --log-level=error && node node_modules/.cache/smoke.mjs",
     "test:e2e": "electron-vite build && esbuild src/main/ipc.ts --bundle --platform=node --format=esm --external:electron --alias:@shared=./src/shared --alias:@core=./src/core --outfile=tests/.ipc-bundle.mjs --log-level=error && esbuild src/server/index.ts --bundle --platform=node --format=esm --packages=external --alias:@shared=./src/shared --alias:@core=./src/core --outfile=tests/.server-bundle.mjs --log-level=error && esbuild src/server/users.ts --bundle --platform=node --format=esm --packages=external --alias:@shared=./src/shared --alias:@core=./src/core --outfile=tests/.users-bundle.mjs --log-level=error && electron tests/launch-check.mjs",
     "serve": "esbuild src/server/main.ts --bundle --platform=node --format=esm --packages=external --alias:@shared=./src/shared --alias:@core=./src/core --outfile=out/server/main.mjs --log-level=error && node out/server/main.mjs",
     "account": "esbuild src/server/accounts.ts --bundle --platform=node --format=esm --packages=external --alias:@shared=./src/shared --alias:@core=./src/core --outfile=out/server/accounts.mjs --log-level=error && node out/server/accounts.mjs",
-    "deploy": "node scripts/deploy.mjs"
+    "deploy": "node scripts/deploy.mjs",
+    "android": "node scripts/android.mjs",
+    "test:android": "node tests/android/build.mjs"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.6.2",
     "@types/node": "^26.4.1",
+    "@types/path-browserify": "^1.0.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^5.2.0",
@@ -29,6 +33,8 @@
     "vite": "^7.3.6"
   },
   "dependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/core": "^8.6.2",
     "@codemirror/commands": "^6.11.0",
     "@codemirror/language": "^6.12.4",
     "@codemirror/state": "^6.7.2",
@@ -36,6 +42,7 @@
     "@codemirror/view": "^6.43.10",
     "@lezer/highlight": "^1.2.3",
     "codemirror": "^6.0.2",
+    "path-browserify": "^1.0.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "zustand": "^5.0.15"

@@ -1129,3 +1129,72 @@ export async function push(
   }
   return send(cwd, status, author)
 }
+
+/**
+ * The parts of a game somebody writes: scripts, the notes and outline beside
+ * them, and the ignore rules git needs to read. Not the artwork, which is most
+ * of a game's size -- 3.8 GB of one real project's 3.8 GB history -- and which
+ * nothing that writes ever opens.
+ */
+export const TEXT_ONLY_PATTERNS = ['/.renpywriter/', '*.rpy', '.gitignore']
+
+/**
+ * Copy a repository down without its artwork.
+ *
+ * The same shape as the server's copy: a partial clone, so pictures are never
+ * downloaded at all, and a sparse checkout, so they are never expected on
+ * disk. Pulling and sending afterwards are ordinary git and need nothing
+ * special. A commit still carries every picture, because git keeps the files
+ * it was told to leave out exactly as they were.
+ */
+export async function cloneTextOnly(
+  url: string,
+  dest: string,
+  author?: { name: string; email: string }
+): Promise<GitResult> {
+  const parent = nodePath.dirname(dest)
+  await fsp.mkdir(parent, { recursive: true })
+
+  const cloned = await run(parent, [
+    'clone', '--quiet', '--filter=blob:none', '--sparse', url, nodePath.basename(dest)
+  ])
+  if (cloned.code !== 0) {
+    await fsp.rm(dest, { recursive: true, force: true }).catch(() => {})
+    return {
+      ok: false,
+      message: 'The repository could not be copied. Check the address and the access token.',
+      detail: withoutCredentials(cloned.stderr.trim())
+    }
+  }
+
+  const sparse = await run(dest, ['sparse-checkout', 'set', '--no-cone', ...TEXT_ONLY_PATTERNS])
+  if (sparse.code !== 0) {
+    await fsp.rm(dest, { recursive: true, force: true }).catch(() => {})
+    return {
+      ok: false,
+      message: 'The repository was found, but its scripts could not be brought down.',
+      detail: withoutCredentials(sparse.stderr.trim())
+    }
+  }
+
+  if (author) {
+    await run(dest, ['config', 'user.name', author.name])
+    await run(dest, ['config', 'user.email', author.email])
+  }
+  return { ok: true, message: 'Copied.' }
+}
+
+/** A remote address with any user and password taken out, for showing. */
+export function withoutCredentials(text: string): string {
+  return text.replace(/(\w+:\/\/)[^/@\s]+@/g, '$1')
+}
+
+/** What a remote is called with a token in it, so git can use it unprompted. */
+export function withToken(url: string, token: string): string {
+  const parsed = new URL(url)
+  if (!token) return parsed.toString()
+  // GitHub ignores the name and checks the token; GitLab wants this one.
+  parsed.username = /(^|\.)github\.com$/i.test(parsed.hostname) ? 'x-access-token' : 'oauth2'
+  parsed.password = token
+  return parsed.toString()
+}

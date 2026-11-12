@@ -273,6 +273,24 @@ export interface HostCapabilities {
    * business, and nobody signing in gets to widen it.
    */
   manageProjects: boolean
+  /**
+   * Whether a project can be added by copying it from a git remote.
+   *
+   * A phone has no folder of games to point at; its projects only ever come
+   * from a remote, copied without their artwork.
+   */
+  cloneProjects?: boolean
+}
+
+/** What adding a project from a remote needs to know. */
+export interface CloneProjectInput {
+  /** The repository's https address, as a browser would show it. */
+  url: string
+  /** An access token, for a private repository. Kept with the copy only. */
+  token: string
+  /** Who commits made here are from. */
+  authorName: string
+  authorEmail: string
 }
 
 export interface MoveBeatRequest {
@@ -327,6 +345,8 @@ export interface RenpyWriterApi {
   pickFolder(): Promise<string | null>
   checkRoot(root: string): Promise<RenpyRootCheck>
   createProject(input: CreateProjectInput): Promise<OpenedProject>
+  /** Copy a project down from a remote, without its artwork, and open it. */
+  cloneProject(input: CloneProjectInput): Promise<OpenedProject>
   openProject(renpyRoot: string): Promise<OpenedProject>
   removeProject(id: string): Promise<ProjectRef[]>
   updateSettings(renpyRoot: string, settings: ProjectSettings): Promise<Project>
@@ -492,6 +512,7 @@ export const IPC = {
   pickFolder: 'projects:pickFolder',
   checkRoot: 'projects:checkRoot',
   createProject: 'projects:create',
+  cloneProject: 'projects:clone',
   openProject: 'projects:open',
   removeProject: 'projects:remove',
   updateSettings: 'projects:updateSettings',

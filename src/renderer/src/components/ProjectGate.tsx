@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { onApiChange } from '../api'
 import { useStore } from '../state/store'
 import AddProjectForm from './AddProjectForm'
+import CloneProjectForm from './CloneProjectForm'
 
 /**
  * Shown until a project is open: the list of known projects, plus the flow for
@@ -68,7 +69,9 @@ export default function ProjectGate() {
           <>
             <p className="hint">
               {capabilities.manageProjects
-                ? 'No projects yet. Point the app at a Ren’Py game folder.'
+                ? capabilities.cloneProjects
+                  ? 'No projects yet. Copy one from where it is kept, such as GitLab.'
+                  : 'No projects yet. Point the app at a Ren’Py game folder.'
                 : 'This server has no projects yet. They are chosen by whoever runs it, with the --project option.'}
             </p>
             {/* Where it looked. "No projects yet" is a claim nobody can check:
@@ -92,7 +95,9 @@ export default function ProjectGate() {
           </div>
         )}
 
-        {adding ? (
+        {adding && capabilities.cloneProjects ? (
+          <CloneProjectForm onCancel={() => setAdding(false)} onDone={() => setAdding(false)} />
+        ) : adding ? (
           <AddProjectForm
             busy={loading}
             onCancel={() => setAdding(false)}

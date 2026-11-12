@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   CreateEpisodeInput,
+  CloneProjectInput,
   CreateProjectInput,
   DeleteCharacterRequest,
   MoveBeatRequest,
@@ -18,6 +19,7 @@ const api: RenpyWriterApi = {
   pickFolder: () => ipcRenderer.invoke(IPC.pickFolder),
   checkRoot: (root: string) => ipcRenderer.invoke(IPC.checkRoot, root),
   createProject: (input: CreateProjectInput) => ipcRenderer.invoke(IPC.createProject, input),
+  cloneProject: (input: CloneProjectInput) => ipcRenderer.invoke(IPC.cloneProject, input),
   openProject: (root: string) => ipcRenderer.invoke(IPC.openProject, root),
   removeProject: (id: string) => ipcRenderer.invoke(IPC.removeProject, id),
   updateSettings: (root: string, settings: ProjectSettings) =>
