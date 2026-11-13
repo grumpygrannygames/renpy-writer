@@ -5401,11 +5401,14 @@ app.whenReady().then(async () => {
 
       // And out again, so the file is as it was found.
       const cue = document.querySelector('.blk-character-input');
-      if (cue) {
-        key(cue, 'Backspace');
-        await wait(2600);
+      if (cue) key(cue, 'Backspace');
+      // Until the autosave has written it, rather than for a fixed time: a
+      // slow save failed this once with the file still mid-way.
+      let after = await window.api.readEpisode(root, file);
+      for (let i = 0; cue && after !== before && i < 32; i++) {
+        await wait(250);
+        after = await window.api.readEpisode(root, file);
       }
-      const after = await window.api.readEpisode(root, file);
 
       // Leave the sidebar and the row as they were found: clicking an episode
       // is also what folds its beats away, and the sections after this one

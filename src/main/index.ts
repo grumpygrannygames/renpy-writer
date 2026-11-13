@@ -10,6 +10,8 @@ function createWindow(): void {
     minHeight: 600,
     show: false,
     title: "Ren'Py Writer",
+    // The app runs from its source folder, so the logo is beside the build.
+    icon: path.join(__dirname, '../../resources/icon.png'),
     backgroundColor: '#1b1b1f',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
