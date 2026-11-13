@@ -6713,9 +6713,57 @@ app.whenReady().then(async () => {
       typed.stage === 'ok' && (await fs.readFile(chapterFile, 'utf8')).includes('typed on the train'),
       JSON.stringify(typed))
 
+    /*
+     * The Android app is drawn behind the phone's status bar and navigation
+     * bar, and Capacitor says how big they are as --safe-area-inset-*. With
+     * nothing keeping clear of them, the project name and the settings
+     * button sat under the clock and could not be tapped.
+     */
+    const measure = () => js(`(async () => {${UNTIL}
+      const root = document.documentElement.style;
+      root.setProperty('--safe-area-inset-top', '40px');
+      root.setProperty('--safe-area-inset-bottom', '30px');
+      await wait(300);
+      const top = (sel) => document.querySelector(sel)?.getBoundingClientRect().top ?? null;
+      const nav = document.querySelector('.phone-nav');
+      const navPad = nav ? parseFloat(getComputedStyle(nav).paddingBottom) : null;
+      const content = document.querySelector('.app')?.getBoundingClientRect();
+      const found = {
+        head: top('.sidebar-head') ?? top('.tabbar') ?? top('.app'),
+        navPad,
+        appBottom: content ? Math.round(innerHeight - content.bottom) : null,
+        appPadBottom: parseFloat(getComputedStyle(document.querySelector('.app')).paddingBottom)
+      };
+      return found;
+    })()`)
+    const unset = () => js(`(() => {
+      document.documentElement.style.removeProperty('--safe-area-inset-top');
+      document.documentElement.style.removeProperty('--safe-area-inset-bottom');
+      return true;
+    })()`)
+
+    const onPhone = await measure()
+    await shoot(win.webContents, 'phone-insets.png')
+    check('on a phone, nothing sits under the status bar', (onPhone.head ?? 0) >= 40, JSON.stringify(onPhone))
+    check('and the bar along the bottom keeps clear of the navigation bar',
+      onPhone.navPad === 30, JSON.stringify(onPhone))
+    check('and is on the screen rather than pushed off it', onPhone.appBottom === 0,
+      JSON.stringify(onPhone))
+    await unset()
+
     win.setSize(1400, 900)
     await settle(win.webContents, 'document.documentElement.clientWidth > 1000')
     await sleep(500)
+
+    // A tablet, or a phone on its side: the wide layout, with the same bars.
+    const wide = await measure()
+    check('in the wide layout too, nothing sits under the status bar', (wide.head ?? 0) >= 40,
+      JSON.stringify(wide))
+    check('or under the navigation bar', wide.appPadBottom === 30, JSON.stringify(wide))
+    await shoot(win.webContents, 'wide-insets.png')
+    await unset()
+    const plain = await js(`(() => document.querySelector('.app').getBoundingClientRect().top)()`)
+    check('and on a desktop, where there are no bars, nothing moves', plain === 0, String(plain))
   }
 
   console.log(`\n${pass} passed, ${fail} failed`)

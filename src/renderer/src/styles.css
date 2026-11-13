@@ -32,6 +32,27 @@ body,
   margin: 0;
 }
 
+/*
+ * Where the phone's own bars are: the status bar along the top, the
+ * navigation bar or home indicator along the bottom, a camera cutout at a
+ * side. The page is drawn behind them, so the app's colour runs to the edges,
+ * and everything you can touch is kept clear of them.
+ *
+ * Browsers say this with env(). The Android app's WebView does not always,
+ * so Capacitor says it as --safe-area-inset-*; whichever is larger wins. On a
+ * desktop both are zero and nothing moves.
+ */
+:root {
+  --inset-top: max(env(safe-area-inset-top, 0px), var(--safe-area-inset-top, 0px));
+  --inset-right: max(env(safe-area-inset-right, 0px), var(--safe-area-inset-right, 0px));
+  --inset-bottom: max(env(safe-area-inset-bottom, 0px), var(--safe-area-inset-bottom, 0px));
+  --inset-left: max(env(safe-area-inset-left, 0px), var(--safe-area-inset-left, 0px));
+}
+#root {
+  box-sizing: border-box;
+  padding: var(--inset-top) var(--inset-right) 0 var(--inset-left);
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -139,6 +160,13 @@ label.check input {
 .app {
   display: flex;
   height: 100%;
+  box-sizing: border-box;
+  padding-bottom: var(--inset-bottom);
+}
+/* On a phone the bar along the bottom keeps itself clear instead, so its
+   colour runs down behind the home indicator. */
+.app.phone {
+  padding-bottom: 0;
 }
 
 .sidebar {
@@ -439,6 +467,7 @@ label.check input {
 
 .gate {
   height: 100%;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -523,7 +552,8 @@ label.check input {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 40px;
+  padding: calc(40px + var(--inset-top)) calc(40px + var(--inset-right))
+    calc(40px + var(--inset-bottom)) calc(40px + var(--inset-left));
   z-index: 50;
 }
 .modal {
@@ -860,7 +890,7 @@ label.check input {
 .app-error {
   position: fixed;
   left: 50%;
-  bottom: 26px;
+  bottom: calc(26px + var(--inset-bottom));
   transform: translateX(-50%);
   z-index: 200;
   max-width: min(720px, calc(100vw - 48px));
@@ -2815,8 +2845,9 @@ label.check input {
  */
 .app.phone {
   flex-direction: column;
-  /* Real viewport height on iOS, where the address bar makes 100vh a lie. */
-  height: 100dvh;
+  /* Real viewport height on iOS, where the address bar makes 100vh a lie --
+     less the status bar the page is kept clear of. */
+  height: calc(100dvh - var(--inset-top));
 }
 
 .app.phone .pane-hidden {
@@ -2839,7 +2870,7 @@ label.check input {
   border-top: 1px solid var(--border);
   background: var(--bg-panel);
   /* Clear of the home indicator rather than under it. */
-  padding-bottom: env(safe-area-inset-bottom, 0);
+  padding-bottom: var(--inset-bottom);
 }
 .pn-tab {
   position: relative;
@@ -2943,7 +2974,7 @@ label.check input {
     padding: 16px;
   }
   .modal-backdrop {
-    padding: 0;
+    padding: var(--inset-top) var(--inset-right) var(--inset-bottom) var(--inset-left);
   }
 }
 
