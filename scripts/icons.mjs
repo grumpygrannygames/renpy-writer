@@ -80,19 +80,23 @@ app.whenReady().then(async () => {
 win = new BrowserWindow({ show: false, width: 200, height: 200 })
 await win.loadURL('data:text/html,<body></body>')
 
-// On a tile of its own the logo can be larger than on an adaptive layer,
-// which Android crops; the nib's tip still clears the rounded corners.
-const full = variant({ scale: 1.15 })
+// On a tile of its own the scene is drawn as designed: it fills the middle,
+// and the text box's corners clear the tile's rounded ones.
+const full = variant()
 // The adaptive foreground: 108dp canvas, of which the middle 66dp is never
-// cropped. The bubble and nib reach about 0.62 of the width, so at 0.92
-// they stay inside it.
-const foreground = variant({ background: false, scale: 0.92 })
+// cropped. The text box is the widest part, and its corners are what a round
+// mask would cut; at 0.72 they stay inside it.
+const foreground = variant({ background: false, scale: 0.72 })
+const background = variant({ foreground: false })
 
 for (const [density, k] of Object.entries(DENSITIES)) {
   const dir = join(res, `mipmap-${density}`)
   save(join(dir, 'ic_launcher.png'), await draw(full, 48 * k, 48 * k, { shape: 'square' }))
   save(join(dir, 'ic_launcher_round.png'), await draw(full, 48 * k, 48 * k, { shape: 'circle' }))
   save(join(dir, 'ic_launcher_foreground.png'), await draw(foreground, 108 * k, 108 * k))
+  // The background layer as a picture rather than a colour, so the glow
+  // behind the character survives on Android 8 and later.
+  save(join(dir, 'ic_launcher_background.png'), await draw(background, 108 * k, 108 * k))
 }
 
 // Splash screens: the logo, small, on the app's own background.

@@ -1,48 +1,64 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <!--
-    Ren'Py Writer: a line of dialogue being written. A speech bubble in the
-    app's accent violet, holding three script lines whose dots are speaker
-    colours, as the Writer view shows them; its tail is a pen nib.
+    Ren'Py Writer: a visual novel scene. A character, and in front of them the
+    text box with their name tag and a line still being typed.
 
     Layers carry ids so scripts/icons.mjs can draw the background and the
     foreground separately, as Android's adaptive icons need.
   -->
   <defs>
-    <linearGradient id="ground" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#2a2547"/>
-      <stop offset="1" stop-color="#121118"/>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b3080"/>
+      <stop offset="1" stop-color="#14121f"/>
     </linearGradient>
-    <linearGradient id="bubble" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#9d8fff"/>
-      <stop offset="1" stop-color="#5440d8"/>
+    <radialGradient id="glow" cx="0.5" cy="0.36" r="0.42">
+      <stop offset="0" stop-color="#8f80ff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#8f80ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="skin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d9d3ff"/>
+      <stop offset="1" stop-color="#a99cff"/>
     </linearGradient>
-    <linearGradient id="nib" x1="0" y1="0" x2="0.3" y2="1">
-      <stop offset="0" stop-color="#ffd877"/>
-      <stop offset="1" stop-color="#e0902c"/>
+    <linearGradient id="hair" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7a68f5"/>
+      <stop offset="1" stop-color="#4434b8"/>
     </linearGradient>
-    <filter id="lift" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#000" flood-opacity="0.45"/>
-    </filter>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8d7dff"/>
+      <stop offset="1" stop-color="#5a47dc"/>
+    </linearGradient>
+    <linearGradient id="tag" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffd36e"/>
+      <stop offset="1" stop-color="#f2a23a"/>
+    </linearGradient>
   </defs>
 
   <g id="background">
     <rect width="1024" height="1024" fill="url(#ground)"/>
+    <rect width="1024" height="1024" fill="url(#glow)"/>
   </g>
 
-  <g id="foreground" filter="url(#lift)">
-    <!-- The nib, as the bubble's tail: drawn first, so the bubble overlaps its base. -->
-    <path d="M 300 548 L 486 600 L 334 806 Z" fill="url(#nib)"/>
-    <path d="M 334 806 L 392 690" stroke="#3a2a10" stroke-width="12" stroke-linecap="round"/>
-    <circle cx="400" cy="672" r="19" fill="#3a2a10"/>
+  <g id="foreground">
+    <!-- Hair at the back: a bob that frames the face. -->
+    <path d="M 378 352 C 372 230 438 182 512 182 C 586 182 652 230 646 352 L 650 470 C 620 488 590 470 586 440 L 438 440 C 434 470 404 488 374 470 Z" fill="url(#hair)"/>
+    <!-- Shoulders. -->
+    <path d="M 296 660 C 300 540 392 492 512 492 C 632 492 724 540 728 660 Z" fill="url(#body)"/>
+    <!-- Face. -->
+    <ellipse cx="512" cy="348" rx="106" ry="118" fill="url(#skin)"/>
+    <!-- A fringe, and the cowlick no visual novel heroine goes without. -->
+    <path d="M 400 352 C 392 252 446 206 512 206 C 580 206 634 252 624 352 L 596 300 L 578 338 L 552 294 L 530 334 L 506 290 L 482 330 L 458 296 L 438 336 L 420 304 Z" fill="url(#hair)"/>
+    <!-- Eyes. -->
+    <ellipse cx="470" cy="384" rx="15" ry="22" fill="#2a2260"/>
+    <ellipse cx="554" cy="384" rx="15" ry="22" fill="#2a2260"/>
+    <circle cx="475" cy="376" r="6" fill="#ffffff"/>
+    <circle cx="559" cy="376" r="6" fill="#ffffff"/>
+    <path d="M 506 214 C 486 170 504 140 540 132 C 524 150 520 178 530 210" fill="url(#hair)"/>
 
-    <rect x="262" y="250" width="520" height="372" rx="124" fill="url(#bubble)"/>
-
-    <!-- Three lines of script, each with its speaker's colour. -->
-    <circle cx="350" cy="352" r="24" fill="#6cc6ff"/>
-    <rect x="394" y="334" width="268" height="36" rx="18" fill="#ffffff" fill-opacity="0.94"/>
-    <circle cx="350" cy="436" r="24" fill="#ff8fbf"/>
-    <rect x="394" y="418" width="320" height="36" rx="18" fill="#ffffff" fill-opacity="0.94"/>
-    <circle cx="350" cy="520" r="24" fill="#7fe3a3"/>
-    <rect x="394" y="502" width="214" height="36" rx="18" fill="#ffffff" fill-opacity="0.94"/>
+    <!-- The text box, with the speaker's name tag and a line being typed. -->
+    <rect x="180" y="574" width="664" height="262" rx="44" fill="#1a1730" fill-opacity="0.96" stroke="#8b7dff" stroke-width="12"/>
+    <rect x="214" y="522" width="250" height="84" rx="26" fill="url(#tag)"/>
+    <rect x="250" y="660" width="470" height="36" rx="18" fill="#ecebff"/>
+    <rect x="250" y="734" width="330" height="36" rx="18" fill="#ecebff"/>
+    <rect x="606" y="722" width="22" height="60" rx="8" fill="#ffd36e"/>
   </g>
 </svg>
